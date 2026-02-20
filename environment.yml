@@ -1,0 +1,13 @@
+name: grocery-backend
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+    - apify-client
+    - playwright
+    - thefuzz
+    - pandas
+    - python-dotenv
