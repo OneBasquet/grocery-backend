@@ -1,5 +1,6 @@
 apify-client
 playwright
+playwright-stealth
 thefuzz
 pandas
 python-dotenv

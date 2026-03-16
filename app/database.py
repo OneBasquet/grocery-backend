@@ -51,9 +51,27 @@ class Database:
                     retailer TEXT NOT NULL,
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    is_clubcard_price INTEGER DEFAULT 0,
+                    normal_price REAL
                 )
             """)
+            
+            # Migration: Add is_clubcard_price and normal_price columns if they don't exist
+            cursor.execute("PRAGMA table_info(products)")
+            columns = [col[1] for col in cursor.fetchall()]
+            
+            if 'is_clubcard_price' not in columns:
+                cursor.execute("""
+                    ALTER TABLE products ADD COLUMN is_clubcard_price INTEGER DEFAULT 0
+                """)
+                print("✓ Added 'is_clubcard_price' column to database")
+            
+            if 'normal_price' not in columns:
+                cursor.execute("""
+                    ALTER TABLE products ADD COLUMN normal_price REAL
+                """)
+                print("✓ Added 'normal_price' column to database")
             
             # Create index on GTIN for faster lookups
             cursor.execute("""
@@ -83,15 +101,18 @@ class Database:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO products (gtin, name, price, unit_price, retailer, timestamp)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO products (gtin, name, price, unit_price, retailer, timestamp, 
+                                      is_clubcard_price, normal_price)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 product_data.get('gtin'),
                 product_data['name'],
                 product_data['price'],
                 product_data.get('unit_price'),
                 product_data['retailer'],
-                product_data.get('timestamp', datetime.now().isoformat())
+                product_data.get('timestamp', datetime.now().isoformat()),
+                product_data.get('is_clubcard_price', 0),
+                product_data.get('normal_price')
             ))
             return cursor.lastrowid
     
@@ -114,13 +135,17 @@ class Database:
                     unit_price = ?,
                     name = ?,
                     timestamp = ?,
-                    updated_at = CURRENT_TIMESTAMP
+                    updated_at = CURRENT_TIMESTAMP,
+                    is_clubcard_price = ?,
+                    normal_price = ?
                 WHERE gtin = ? AND retailer = ?
             """, (
                 product_data['price'],
                 product_data.get('unit_price'),
                 product_data['name'],
                 product_data.get('timestamp', datetime.now().isoformat()),
+                product_data.get('is_clubcard_price', 0),
+                product_data.get('normal_price'),
                 gtin,
                 product_data['retailer']
             ))

@@ -97,7 +97,10 @@ class SainsburysPlaywrightScraper:
                 args=[
                     '--disable-blink-features=AutomationControlled',
                     '--no-sandbox',
-                    '--disable-dev-shm-usage'
+                    '--disable-dev-shm-usage',
+                    '--disable-crash-reporter',  # Disable Crashpad
+                    '--disable-breakpad',         # Disable crash reporting  
+                    '--disable-extensions'        # Disable extensions
                 ]
             )
             
@@ -360,19 +363,44 @@ class SainsburysPlaywrightScraper:
                                 price = price_match.group()
                                 break
                 
-                # Extract unit price
+                # Extract unit price — must contain '/' or 'per' to be valid
                 unit_price_selectors = [
+                    '[data-testid*="unit-price"]',
+                    '[data-testid*="price-per"]',
+                    '[data-testid*="unit_price"]',
                     '[data-testid*="unit"]',
-                    '[class*="unit"]',
+                    '[class*="unit-price"]',
+                    '[class*="unitPrice"]',
                     'span:has-text("/kg")',
-                    'span:has-text("/l")'
+                    'span:has-text("/litre")',
+                    'span:has-text("/l")',
+                    'span:has-text("/100")',
+                    'p:has-text("/kg")',
+                    'p:has-text("/litre")',
+                    'p:has-text("/l")',
                 ]
-                unit_price = self._find_text(element, unit_price_selectors)
-                
-                # Alternative: Look for pattern like "£X.XX/unit" in lines
+                unit_price = None
+                for sel in unit_price_selectors:
+                    try:
+                        loc = element.locator(sel).first
+                        if loc.count() > 0:
+                            text = loc.inner_text().strip()
+                            # Only accept if it actually contains the unit separator
+                            if text and ('/' in text or 'per' in text.lower()):
+                                unit_price = text
+                                break
+                    except Exception:
+                        continue
+
+                # Fallback: scan all lines for a unit price pattern
                 if not unit_price and lines:
+                    import re as _re
                     for line in lines:
-                        if '/' in line and '£' in line:
+                        line = line.strip()
+                        if _re.search(r'(£[\d.]+|[\d.]+p)\s*/\s*\w+', line, _re.I):
+                            unit_price = line
+                            break
+                        if '/' in line and ('£' in line or line.endswith('g') or line.endswith('l')):
                             unit_price = line
                             break
                 

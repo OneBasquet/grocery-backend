@@ -14,7 +14,7 @@ def main():
     
     parser.add_argument(
         'command',
-        choices=['scrape', 'compare', 'stats', 'savings'],
+        choices=['scrape', 'compare', 'stats', 'savings', 'report'],
         help='Command to execute'
     )
     
@@ -182,6 +182,61 @@ def main():
         print(f"\n{'-'*110}")
         print(f"💵 TOTAL POTENTIAL SAVINGS: £{total_savings:.2f}")
         print(f"{'='*110}\n")
+    
+    elif args.command == 'report':
+        # Comprehensive summary report
+        print(f"\n{'='*80}")
+        print("📊 COMPREHENSIVE GROCERY PRICE REPORT")
+        print(f"{'='*80}\n")
+        
+        # 1. Database Statistics
+        stats = orchestrator.get_database_stats()
+        print("📈 DATABASE OVERVIEW:")
+        print(f"  Total Products: {stats['total_products']}")
+        print(f"    ├─ Asda: {stats['asda']} products")
+        print(f"    ├─ Sainsbury's: {stats['sainsburys']} products")
+        print(f"    └─ Tesco: {stats['tesco']} products")
+        print()
+        
+        # 2. Top 10 Cheapest Items
+        print("💰 TOP 10 CHEAPEST ITEMS:")
+        print(f"{'-'*80}")
+        all_products = orchestrator.compare_prices("", limit=10)
+        if all_products:
+            for i, product in enumerate(all_products[:10], 1):
+                retailer = product['retailer'].upper()
+                price = f"£{product['price']:.2f}" if isinstance(product['price'], (int, float)) else product['price']
+                name = product['name'][:50] + '...' if len(product['name']) > 50 else product['name']
+                print(f"  {i:2}. [{retailer:4}] {price:7} - {name}")
+        print()
+        
+        # 3. Savings Opportunities
+        savings = orchestrator.find_savings_opportunities(min_percentage=10.0, limit=10)
+        if savings:
+            print(f"💵 SAVINGS OPPORTUNITIES (>10% difference):")
+            print(f"{'-'*80}")
+            for item in savings[:5]:  # Top 5
+                product_name = item['product_name'][:40] + '...' if len(item['product_name']) > 40 else item['product_name']
+                cheapest = f"{item['cheapest_retailer'].upper()[:4]} £{item['cheapest_price']:.2f}"
+                expensive = f"{item['expensive_retailer'].upper()[:4]} £{item['expensive_price']:.2f}"
+                savings_amount = f"£{item['savings_amount']:.2f}"
+                percentage = f"{item['savings_percentage']:.1f}%"
+                print(f"  • {product_name}")
+                print(f"    Buy at {cheapest} instead of {expensive} - Save {savings_amount} ({percentage})")
+            
+            total_savings = sum(item['savings_amount'] for item in savings)
+            print(f"\n  💰 TOTAL POTENTIAL SAVINGS: £{total_savings:.2f}")
+        else:
+            print(f"💡 No significant savings opportunities found (>10% difference)")
+        print()
+        
+        # 4. Category Breakdown (if we can detect categories)
+        print("📦 QUICK TIPS:")
+        print(f"  • Run 'python main.py compare --query \"<product>\"' for detailed comparisons")
+        print(f"  • Run 'python main.py savings' for full savings list")
+        print(f"  • Run 'python main.py scrape --query \"<product>\" --retailer <retailer>' to add more products")
+        
+        print(f"\n{'='*80}\n")
     
     return 0
 

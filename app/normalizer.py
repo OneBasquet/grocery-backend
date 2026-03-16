@@ -40,7 +40,9 @@ class ProductNormalizer:
             'price': self._parse_price(raw_data.get('price', 0)),
             'unit_price': self._clean_unit_price(raw_data.get('unit_price')),
             'retailer': source.lower(),
-            'timestamp': datetime.now().isoformat()
+            'timestamp': datetime.now().isoformat(),
+            'is_clubcard_price': int(raw_data.get('is_clubcard_price', 0)),
+            'normal_price': self._parse_price(raw_data.get('normal_price', 0)) if raw_data.get('normal_price') else None
         }
         
         return normalized
@@ -108,39 +110,77 @@ class ProductNormalizer:
     
     def _clean_unit_price(self, unit_price: Any) -> Optional[str]:
         """
-        Clean unit price string and extract numeric value.
+        Clean unit price string and normalize to standard format.
         
-        Extracts only the numeric value from strings like:
-        - '£1.74 / kg' -> '1.74'
-        - '£1.35 / ltr' -> '1.35'
-        - '1.06' -> '1.06'
+        Handles various formats:
+        - '£1.74 / kg' -> '1.74/kg'
+        - '0.73/litre' -> '0.73/litre' (from Tesco API)
+        - '9.2p per 100g' -> '0.092/100g' (convert pence to pounds)
+        - '(£1.23/kg)' -> '1.23/kg' (remove parentheses)
+        - '1.06' -> '1.06' (raw number)
         
         Args:
             unit_price: Raw unit price data
             
         Returns:
-            Numeric unit price string or None
+            Cleaned unit price string or None
         """
         if not unit_price:
             return None
         
-        # Convert to string
-        unit_price_str = str(unit_price).strip()
+        # Convert to string and clean parentheses
+        unit_price_str = str(unit_price).strip().strip('()')
         
-        # Use regex to extract the first decimal number
-        # Pattern matches: optional £/$, digits, optional decimal point and more digits
-        match = re.search(r'[£$]?\s*(\d+\.?\d*)', unit_price_str)
+        # Handle pence format (e.g., "9.2p per 100g" -> "0.092/100g")
+        pence_match = re.match(r'(\d+\.?\d*)p\s*(?:per|/)\s*(\w+)', unit_price_str, re.I)
+        if pence_match:
+            pence_value = float(pence_match.group(1)) / 100  # Convert pence to pounds
+            unit = ProductNormalizer._normalise_unit(pence_match.group(2))
+            return f"{pence_value:.3f}/{unit}"
         
-        if match:
-            numeric_value = match.group(1)
-            # Return only if it's a valid number
+        # Handle standard formats with £/$ and unit
+        # Pattern: £1.74 / kg or £1.74/kg or 0.73/litre
+        standard_match = re.search(r'[£$]?\s*(\d+\.?\d*)\s*[/]?\s*(?:per\s+)?(\w+)?', unit_price_str, re.I)
+        
+        if standard_match:
+            numeric_value = standard_match.group(1)
+            unit = standard_match.group(2)
+            
+            # Validate numeric value
             try:
                 float(numeric_value)
-                return numeric_value
+                # If we have a unit, normalise and format as "value/unit"
+                if unit and len(unit) > 1:  # Avoid single-letter artifacts
+                    unit = ProductNormalizer._normalise_unit(unit)
+                    return f"{numeric_value}/{unit}"
+                else:
+                    return numeric_value
+            except ValueError:
+                pass
+        
+        # Fallback: Just extract the first number
+        fallback_match = re.search(r'(\d+\.?\d*)', unit_price_str)
+        if fallback_match:
+            try:
+                float(fallback_match.group(1))
+                return fallback_match.group(1)
             except ValueError:
                 pass
         
         return None
+
+    @staticmethod
+    def _normalise_unit(unit: str) -> str:
+        """Normalise unit abbreviations to a consistent lowercase form."""
+        mapping = {
+            'lt': 'litre', 'ltr': 'litre', 'l': 'litre',
+            'liters': 'litre', 'liter': 'litre', 'litres': 'litre',
+            'kg': 'kg', 'kgs': 'kg', 'kilogram': 'kg', 'kilograms': 'kg',
+            'g': 'g', 'grams': 'g', 'gram': 'g',
+            'ml': 'ml', 'millilitre': 'ml', 'millilitres': 'ml',
+            '100g': '100g', '100ml': '100ml',
+        }
+        return mapping.get(unit.lower(), unit.lower())
     
     def insert_or_update_product(self, product_data: Dict[str, Any]) -> tuple[str, int]:
         """
