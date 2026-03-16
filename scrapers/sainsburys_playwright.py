@@ -1,11 +1,17 @@
 """
 Sainsbury's scraper using Playwright with stealth mode.
 Scrapes product data from Sainsbury's search results locally.
+Includes Nectar Price extraction (member_price) via two strategies:
+  1. Parent-search: pre-scan all nectar elements on the page and walk up
+     the DOM to their product-tile ancestor, building a tile-index map.
+  2. Within-tile fallback: search each tile directly for nectar selectors
+     and text-line patterns.
 """
 from playwright.sync_api import sync_playwright, Page, Browser
 from typing import List, Dict, Any, Optional
 import time
 import random
+import re
 
 
 class SainsburysPlaywrightScraper:
@@ -258,7 +264,11 @@ class SainsburysPlaywrightScraper:
             return products
         
         print(f"✓ Using selector: '{found_selector}' ({product_elements.count()} elements, filtering non-products...)")
-        
+
+        # Build the Nectar price map via parent-search before iterating tiles.
+        # This pre-scans the whole page once so the per-tile loop stays fast.
+        nectar_map = self._prebuild_nectar_map(page, found_selector)
+
         count = min(product_elements.count(), max_items)
         
         for i in range(count):
@@ -296,9 +306,13 @@ class SainsburysPlaywrightScraper:
                 try:
                     full_text = element.inner_text()
                     lines = [line.strip() for line in full_text.split('\n') if line.strip()]
-                except:
+                except Exception:
                     lines = []
-                
+
+                # Resolve the nectar price for this tile early so price
+                # extraction can exclude it when scanning lines.
+                tile_nectar_price = nectar_map.get(i)
+
                 # Extract product name - try multiple approaches
                 name = None
                 
@@ -332,36 +346,52 @@ class SainsburysPlaywrightScraper:
                 
                 # Extract price - try multiple approaches
                 price = None
-                
-                # Approach 1: Specific selectors
+
+                # Approach 1: Specific selectors — explicitly exclude Nectar
+                # elements (data-testid="nectar-price-label" contains "price"
+                # and would otherwise be matched).
                 price_selectors = [
-                    '[data-testid*="price"]:not([data-testid*="unit"])',
-                    '[class*="price"]:not([class*="unit"])',
+                    '[data-testid*="price"]:not([data-testid*="unit"]):not([data-testid*="nectar"])',
+                    '[class*="price"]:not([class*="unit"]):not([class*="nectar"])',
                     'span:has-text("£")',
                     'p:has-text("£")',
                     '[class*="cost"]'
                 ]
                 price = self._find_text(element, price_selectors)
-                
-                # Validate: If price doesn't contain £ or digits, it's not a real price
-                if price and ('nectar' in price.lower() or '£' not in price):
-                    price = None  # Reset and try fallback
-                
-                # Approach 2: Find any text with £ symbol
+
+                # Validate: reject if the value is a Nectar label, missing £,
+                # or numerically equal to the already-known Nectar price.
+                if price:
+                    if 'nectar' in price.lower() or '£' not in price:
+                        price = None
+                    elif tile_nectar_price:
+                        try:
+                            if abs(float(price.replace('£', '')) - float(tile_nectar_price)) < 0.001:
+                                price = None  # Selector matched the Nectar element
+                        except ValueError:
+                            pass
+
+                # Approach 2: line scan — skip the nectar price value so we
+                # land on the shelf price (e.g. skip £2.00 and take £2.65).
                 if not price:
-                    import re
-                    # Look through ALL lines for actual price patterns
                     for line in lines:
-                        if '£' in line:
-                            # Skip lines that are clearly labels, not prices
-                            if 'nectar' in line.lower() and 'price' in line.lower():
-                                continue
-                            
-                            # Extract price using regex (e.g., "£2.65" from "£2.65£1.33 / ltr")
-                            price_match = re.search(r'£\d+\.?\d*', line)
-                            if price_match:
-                                price = price_match.group()
-                                break
+                        if '£' not in line:
+                            continue
+                        if 'nectar' in line.lower() and 'price' in line.lower():
+                            continue
+                        price_match = re.search(r'£(\d+\.?\d*)', line)
+                        if not price_match:
+                            continue
+                        candidate = price_match.group(0)
+                        # Skip if this value is the known Nectar price.
+                        if tile_nectar_price:
+                            try:
+                                if abs(float(price_match.group(1)) - float(tile_nectar_price)) < 0.001:
+                                    continue
+                            except ValueError:
+                                pass
+                        price = candidate
+                        break
                 
                 # Extract unit price — must contain '/' or 'per' to be valid
                 unit_price_selectors = [
@@ -444,6 +474,14 @@ class SainsburysPlaywrightScraper:
                 except:
                     pass
                 
+                # ---- Nectar (member) price --------------------------------
+                # tile_nectar_price was resolved from the parent-search map at
+                # the start of this iteration; fall back to within-tile search.
+                nectar_price = tile_nectar_price or self._extract_nectar_price(
+                    element, lines
+                )
+                # ----------------------------------------------------------
+
                 if name and price:
                     # If fetch_gtin is enabled and we have a product URL but no GTIN, visit detail page
                     if self.fetch_gtin and not gtin and product_url:
@@ -452,18 +490,21 @@ class SainsburysPlaywrightScraper:
                         gtin = self._extract_gtin_from_detail_page(page, product_url)
                         if gtin and self.debug and len(products) < 3:
                             print(f"  ✓ Found GTIN: {gtin}")
-                    
+
                     products.append({
                         'name': name.strip(),
                         'price': price.strip(),
                         'unit_price': unit_price.strip() if unit_price else None,
                         'gtin': gtin,
-                        'url': product_url
+                        'url': product_url,
+                        'member_price': nectar_price,
+                        'is_clubcard_price': bool(nectar_price),
                     })
-                    if self.debug and len(products) <= 3:  # Show first 3 actual products
+                    if self.debug and len(products) <= 3:
                         gtin_status = f"(GTIN: {gtin})" if gtin else "(No GTIN)"
-                        print(f"  ✓ Product #{len(products)}: '{name[:40]}' - {price} {gtin_status}")
-                elif self.debug and i < 10 and (name or price):  # Show partial matches
+                        nectar_status = f" | Nectar £{nectar_price}" if nectar_price else ""
+                        print(f"  ✓ Product #{len(products)}: '{name[:40]}' - {price}{nectar_status} {gtin_status}")
+                elif self.debug and i < 10 and (name or price):
                     print(f"  ⚠ Element {i} (partial): name='{name[:30] if name else 'None'}', price='{price or 'None'}'")
                     if i < 2 and lines:
                         print(f"    Available lines: {lines[:5]}")
@@ -590,14 +631,125 @@ class SainsburysPlaywrightScraper:
                 print(f"  ⚠ Error fetching GTIN from {product_url}: {e}")
             return None
     
+    # ------------------------------------------------------------------
+    # Nectar price extraction
+    # ------------------------------------------------------------------
+
+    # Selectors that Sainsbury's uses to mark Nectar price elements.
+    # Ordered from most specific to most general.
+    _NECTAR_SELECTORS = (
+        '[data-testid="nectar-price"]',
+        '[data-testid*="nectar"]',
+        '[class*="nectar-price"]',
+        '[class*="NectarPrice"]',
+        '[class*="nectar"]',
+        'span:has-text("with Nectar")',
+        'p:has-text("with Nectar")',
+        '*:has-text("Nectar Price")',
+    )
+
+    def _prebuild_nectar_map(self, page: Page, tile_selector: str) -> Dict[int, str]:
+        """
+        Parent-search approach: scan the entire page for every Nectar price
+        element, then walk each element up the DOM tree until an ancestor that
+        matches the product-tile selector is found.  Returns a dict of
+        tile_index (0-based, matching the order of tile_selector on the page)
+        → nectar_price_string.
+
+        This is more robust than a simple within-tile search because Nectar
+        elements can be nested at arbitrary depth, or even placed as siblings
+        of the tile rather than inside it (depending on the page version).
+        """
+        nectar_map: Dict[int, str] = {}
+        # Escape single quotes in the selector for safe JS interpolation.
+        safe_sel = tile_selector.replace("'", "\\'")
+
+        for nectar_sel in self._NECTAR_SELECTORS:
+            try:
+                nectar_els = page.locator(nectar_sel).all()
+                for nectar_el in nectar_els:
+                    try:
+                        text = nectar_el.inner_text().strip()
+                    except Exception:
+                        continue
+                    m = re.search(r'£\s*(\d+\.?\d*)', text)
+                    if not m:
+                        continue
+                    price_val = m.group(1)
+
+                    # Walk up the DOM tree in JS to find which tile index this
+                    # element belongs to.
+                    try:
+                        tile_idx = nectar_el.evaluate(f"""
+                            (el) => {{
+                                const tiles = Array.from(
+                                    document.querySelectorAll('{safe_sel}')
+                                );
+                                let node = el;
+                                while (node) {{
+                                    const idx = tiles.indexOf(node);
+                                    if (idx !== -1) return idx;
+                                    node = node.parentElement;
+                                }}
+                                return -1;
+                            }}
+                        """)
+                    except Exception:
+                        tile_idx = -1
+
+                    if isinstance(tile_idx, int) and tile_idx >= 0:
+                        nectar_map.setdefault(tile_idx, price_val)
+
+            except Exception:
+                continue
+
+        if self.debug and nectar_map:
+            print(f"  🟣 Nectar map (parent-search): {len(nectar_map)} tiles "
+                  f"have a Nectar price")
+        return nectar_map
+
+    def _extract_nectar_price(self, element, lines: List[str]) -> Optional[str]:
+        """
+        Within-tile fallback: search a product tile directly for a Nectar price.
+
+        Strategy 1 — selector scan: try known data-testid / class selectors.
+        Strategy 2 — line scan: look for lines containing 'nectar' and '£'.
+
+        Returns the numeric price string (e.g. '1.25') or None.
+        """
+        # Strategy 1: known selectors inside the tile
+        for sel in self._NECTAR_SELECTORS:
+            try:
+                loc = element.locator(sel).first
+                if loc.count() > 0:
+                    text = loc.inner_text().strip()
+                    m = re.search(r'£\s*(\d+\.?\d*)', text)
+                    if m:
+                        return m.group(1)
+            except Exception:
+                continue
+
+        # Strategy 2: text-line scan
+        for line in lines:
+            if 'nectar' in line.lower() and '£' in line:
+                m = re.search(r'£\s*(\d+\.?\d*)', line)
+                if m:
+                    return m.group(1)
+
+        return None
+
+    # ------------------------------------------------------------------
+    # Generic text helper
+    # ------------------------------------------------------------------
+
     def _find_text(self, element, selectors: List[str]) -> str:
         """
         Try multiple selectors to find text content.
-        
+
         Args:
             element: Playwright locator
             selectors: List of CSS selectors to try
-            
+
         Returns:
             Text content or empty string
         """
@@ -606,7 +758,7 @@ class SainsburysPlaywrightScraper:
                 locator = element.locator(selector).first
                 if locator.count() > 0:
                     return locator.inner_text()
-            except:
+            except Exception:
                 continue
         return ""
 

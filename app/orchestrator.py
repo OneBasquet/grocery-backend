@@ -227,10 +227,21 @@ class GroceryPriceOrchestrator:
         savings = []
         processed = set()  # Track processed product pairs to avoid duplicates
         
-        # Get all products from all retailers
+        # Get all products from all retailers.
+        # Use ProductNormalizer.effective_price() so that any member/loyalty price
+        # (e.g. Tesco Clubcard) is used when it is lower than the shelf price.
         retailers_data = {}
         for retailer in ['tesco', 'sainsburys', 'asda']:
-            products = [p for p in self.db.get_all_products(retailer) if p['price'] > 0]
+            products = []
+            for p in self.db.get_all_products(retailer):
+                if (p.get('price') or 0) <= 0:
+                    continue
+                effective_p = self.normalizer.effective_price(p)
+                effective = dict(p)
+                effective['price'] = effective_p
+                if effective_p != float(p['price']):
+                    effective['_price_note'] = f"Member price £{effective_p:.2f}"
+                products.append(effective)
             retailers_data[retailer] = products
         
         # Strategy 1: Match by GTIN (exact match)
@@ -272,6 +283,7 @@ class GroceryPriceOrchestrator:
                     'product_name': cheapest['name'],
                     'cheapest_retailer': cheapest['retailer'],
                     'cheapest_price': cheapest['price'],
+                    'cheapest_is_member': bool(cheapest.get('_price_note')),
                     'expensive_retailer': most_expensive['retailer'],
                     'expensive_price': most_expensive['price'],
                     'savings_amount': price_diff,
@@ -325,6 +337,7 @@ class GroceryPriceOrchestrator:
                                         'product_name': cheapest['name'],
                                         'cheapest_retailer': cheap_retailer,
                                         'cheapest_price': cheapest['price'],
+                                        'cheapest_is_member': bool(cheapest.get('_price_note')),
                                         'expensive_retailer': exp_retailer,
                                         'expensive_price': expensive['price'],
                                         'savings_amount': price_diff,

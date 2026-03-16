@@ -42,7 +42,8 @@ class ProductNormalizer:
             'retailer': source.lower(),
             'timestamp': datetime.now().isoformat(),
             'is_clubcard_price': int(raw_data.get('is_clubcard_price', 0)),
-            'normal_price': self._parse_price(raw_data.get('normal_price', 0)) if raw_data.get('normal_price') else None
+            'normal_price': self._parse_price(raw_data.get('normal_price', 0)) if raw_data.get('normal_price') else None,
+            'member_price': self._parse_price(raw_data.get('member_price', 0)) if raw_data.get('member_price') else None,
         }
         
         return normalized
@@ -170,6 +171,26 @@ class ProductNormalizer:
         return None
 
     @staticmethod
+    def effective_price(product: Dict[str, Any]) -> float:
+        """
+        Return the best available price for a product.
+
+        When a member/loyalty price (e.g. Tesco Clubcard) is present and lower
+        than the shelf price, return it so that savings comparisons reflect what
+        a card-holding shopper actually pays.
+        """
+        shelf = float(product.get('price') or 0)
+        member = product.get('member_price')
+        if member:
+            try:
+                member_f = float(member)
+                if member_f > 0 and member_f < shelf:
+                    return member_f
+            except (TypeError, ValueError):
+                pass
+        return shelf
+
+    @staticmethod
     def _normalise_unit(unit: str) -> str:
         """Normalise unit abbreviations to a consistent lowercase form."""
         mapping = {
@@ -253,9 +274,9 @@ class ProductNormalizer:
             if best_match.get('gtin'):
                 self.db.update_product_by_gtin(best_match['gtin'], update_data)
             else:
-                # For products without GTIN, we still return the matched ID
-                # but we might want to insert as new entry to track price history
-                pass
+                # No GTIN — update by primary key so price and member_price
+                # are refreshed on every scrape rather than staying stale.
+                self.db.update_product_by_id(best_match['id'], update_data)
             
             return best_match['id']
         

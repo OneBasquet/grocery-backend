@@ -204,35 +204,63 @@ class TescoPlaywrightScraper:
         elif price_obj:
             product['price'] = str(price_obj)
         
-        # Clubcard price (promotional price)
-        clubcard = item.get("clubcardPrice", item.get("promotionalPrice", ""))
-        is_clubcard = False
-        
-        # Also check promotions array
-        promotions = item.get("promotions", [])
-        if isinstance(promotions, list) and promotions:
-            for promo in promotions:
-                if isinstance(promo, dict):
-                    promo_type = promo.get("type", "").lower()
-                    if "clubcard" in promo_type:
-                        clubcard_price_val = promo.get("price", promo.get("offerPrice", ""))
-                        if clubcard_price_val:
-                            clubcard = clubcard_price_val
-                            break
-        
-        if isinstance(clubcard, dict):
-            clubcard_price_val = str(clubcard.get("price", clubcard.get("actual", "")))
-            if clubcard_price_val:
-                # Store the normal price before overriding
-                product['normal_price'] = product.get('price')
-                product['price'] = clubcard_price_val
-                is_clubcard = True
-        elif clubcard:
-            product['normal_price'] = product.get('price')
-            product['price'] = str(clubcard)
-            is_clubcard = True
-        
-        product['is_clubcard_price'] = is_clubcard
+        # Clubcard price — stored separately as member_price.
+        # price stays as the regular shelf price so comparisons are fair.
+
+        # Helper: try to parse a Clubcard numeric value from a promotions list.
+        def _extract_clubcard_from_promotions(promos) -> Optional[str]:
+            for promo in (promos or []):
+                if not isinstance(promo, dict):
+                    continue
+                attrs = promo.get("attributes") or []
+                promo_type = (promo.get("type") or promo.get("promotionType") or "").lower()
+                is_clubcard = "CLUBCARD_PRICING" in attrs or "clubcard" in promo_type
+                if not is_clubcard:
+                    continue
+                # The numeric Clubcard price is in the description, e.g. "£3.00 Clubcard Price".
+                # price.afterDiscount mirrors the regular price in xapi responses — don't use it.
+                desc = promo.get("description") or ""
+                # Skip multi-buy bundles ("Any 2 for £3.50") — per-unit price is indeterminate.
+                if re.search(r'\d+\s+for\b', desc, re.IGNORECASE):
+                    continue
+                m = re.search(r'£\s*(\d+\.?\d*)', desc)
+                if m:
+                    return m.group(1)
+                # Fallback to explicit price fields (other API shapes)
+                val = promo.get("offerPrice") or promo.get("price")
+                if isinstance(val, dict):
+                    val = val.get("afterDiscount") or val.get("price")
+                if val is not None:
+                    return str(val)
+            return None
+
+        # Priority 1: top-level clubcardPrice / promotionalPrice field
+        clubcard_raw = item.get("clubcardPrice") or item.get("promotionalPrice") or ""
+
+        # Priority 2: promotions nested inside sellers.results[0] (xapi.tesco.com GraphQL shape)
+        if not clubcard_raw:
+            for seller_result in (sellers.get("results", []) if isinstance(sellers, dict) else []):
+                if not isinstance(seller_result, dict):
+                    continue
+                found = _extract_clubcard_from_promotions(seller_result.get("promotions"))
+                if found:
+                    clubcard_raw = found
+                    break
+
+        # Priority 3: promotions at item root (other endpoint shapes)
+        if not clubcard_raw:
+            clubcard_raw = _extract_clubcard_from_promotions(item.get("promotions")) or ""
+
+        member_price_val = None
+        if isinstance(clubcard_raw, dict):
+            member_price_val = clubcard_raw.get("price", clubcard_raw.get("actual"))
+        elif clubcard_raw:
+            member_price_val = clubcard_raw
+
+        if member_price_val:
+            product['member_price'] = str(member_price_val)
+
+        product['is_clubcard_price'] = bool(member_price_val)
         
         # No bare-number unit price fallback — without a unit label it's meaningless
         
@@ -350,17 +378,17 @@ class TescoPlaywrightScraper:
                         product = {
                             'name': name,
                             'gtin': gtin,
-                            'is_clubcard_price': is_clubcard
+                            'is_clubcard_price': is_clubcard,
+                            # Regular shelf price always goes in 'price'.
+                            # Clubcard price goes in 'member_price' so that
+                            # effective_price() and savings logic work correctly.
+                            'price': price.replace('£', '') if price else (
+                                clubcard_price.replace('£', '') if clubcard_price else None
+                            ),
+                            'member_price': clubcard_price.replace('£', '') if is_clubcard and clubcard_price else None,
+                            'normal_price': None,
+                            'unit_price': unit_price,
                         }
-                        
-                        if is_clubcard and clubcard_price:
-                            product['price'] = clubcard_price.replace('£', '')
-                            product['normal_price'] = price.replace('£', '') if price else None
-                        else:
-                            product['price'] = price.replace('£', '') if price else None
-                            product['normal_price'] = None
-                        
-                        product['unit_price'] = unit_price
                         products.append(product)
                 
                 except Exception as e:
@@ -497,13 +525,43 @@ class TescoPlaywrightScraper:
                 if self.debug:
                     print(f"  📄 Page title: {page.title()}")
                 
-                # Wait a bit for API responses to come in
+                # Wait for the main xapi product response to arrive.
+                # Scroll triggers additional lazy-load API calls.
                 self._random_delay(2, 3)
-                
+                self._human_like_scroll(page)
+                self._random_delay(1, 2)
+
                 # Strategy 1: Parse intercepted API responses
                 products = self._parse_api_products()
-                
-                # Strategy 2: Fall back to HTML if API gave nothing
+
+                # The xapi GraphQL endpoint sometimes returns trending/recommended
+                # products instead of (or alongside) actual search results.
+                # Filter to items whose name contains at least one query word.
+                # If NONE match, the API payload is off-topic — discard it and
+                # let the HTML fallback read the correct search result DOM.
+                if products and search_query:
+                    query_words = [w for w in search_query.lower().split() if len(w) > 2]
+                    if query_words:
+                        relevant = [
+                            p for p in products
+                            if any(w in (p.get('name') or '').lower() for w in query_words)
+                        ]
+                        if relevant:
+                            if self.debug and len(relevant) < len(products):
+                                print(f"  🔎 Query filter: kept {len(relevant)}/{len(products)} "
+                                      f"products matching '{search_query}'")
+                            products = relevant
+                        else:
+                            # Zero matches — API returned off-topic content entirely.
+                            if self.debug:
+                                print(f"  ⚠️ API results don't match '{search_query}' "
+                                      f"({len(products)} products, none relevant) — "
+                                      f"discarding, will use HTML fallback")
+                            products = []
+
+                # Strategy 2: Fall back to HTML if API gave nothing.
+                # The HTML fallback also captures Clubcard prices via DOM selectors
+                # and correctly stores them as member_price.
                 if not products:
                     if self.debug:
                         print("  ℹ️ No API data, falling back to HTML parsing...")

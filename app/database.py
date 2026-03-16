@@ -72,6 +72,12 @@ class Database:
                     ALTER TABLE products ADD COLUMN normal_price REAL
                 """)
                 print("✓ Added 'normal_price' column to database")
+
+            if 'member_price' not in columns:
+                cursor.execute("""
+                    ALTER TABLE products ADD COLUMN member_price REAL
+                """)
+                print("✓ Added 'member_price' column to database")
             
             # Create index on GTIN for faster lookups
             cursor.execute("""
@@ -101,9 +107,9 @@ class Database:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO products (gtin, name, price, unit_price, retailer, timestamp, 
-                                      is_clubcard_price, normal_price)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO products (gtin, name, price, unit_price, retailer, timestamp,
+                                      is_clubcard_price, normal_price, member_price)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 product_data.get('gtin'),
                 product_data['name'],
@@ -112,7 +118,8 @@ class Database:
                 product_data['retailer'],
                 product_data.get('timestamp', datetime.now().isoformat()),
                 product_data.get('is_clubcard_price', 0),
-                product_data.get('normal_price')
+                product_data.get('normal_price'),
+                product_data.get('member_price'),
             ))
             return cursor.lastrowid
     
@@ -130,14 +137,15 @@ class Database:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                UPDATE products 
+                UPDATE products
                 SET price = ?,
                     unit_price = ?,
                     name = ?,
                     timestamp = ?,
                     updated_at = CURRENT_TIMESTAMP,
                     is_clubcard_price = ?,
-                    normal_price = ?
+                    normal_price = ?,
+                    member_price = ?
                 WHERE gtin = ? AND retailer = ?
             """, (
                 product_data['price'],
@@ -146,11 +154,49 @@ class Database:
                 product_data.get('timestamp', datetime.now().isoformat()),
                 product_data.get('is_clubcard_price', 0),
                 product_data.get('normal_price'),
+                product_data.get('member_price'),
                 gtin,
                 product_data['retailer']
             ))
             return cursor.rowcount > 0
     
+    def update_product_by_id(self, product_id: int, product_data: Dict[str, Any]) -> bool:
+        """
+        Update an existing product by its primary key.
+        Used for fuzzy-matched products that have no GTIN.
+
+        Args:
+            product_id: The row id to update
+            product_data: Dictionary containing updated product information
+
+        Returns:
+            bool: True if a row was updated, False otherwise
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE products
+                SET price = ?,
+                    unit_price = ?,
+                    name = ?,
+                    timestamp = ?,
+                    updated_at = CURRENT_TIMESTAMP,
+                    is_clubcard_price = ?,
+                    normal_price = ?,
+                    member_price = ?
+                WHERE id = ?
+            """, (
+                product_data['price'],
+                product_data.get('unit_price'),
+                product_data['name'],
+                product_data.get('timestamp', datetime.now().isoformat()),
+                product_data.get('is_clubcard_price', 0),
+                product_data.get('normal_price'),
+                product_data.get('member_price'),
+                product_id,
+            ))
+            return cursor.rowcount > 0
+
     def find_product_by_gtin(self, gtin: str, retailer: str) -> Optional[Dict[str, Any]]:
         """
         Find a product by GTIN and retailer.

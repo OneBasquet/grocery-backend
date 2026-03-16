@@ -5,6 +5,18 @@ Main entry point for the Grocery Price Comparison Engine.
 import argparse
 from app.orchestrator import GroceryPriceOrchestrator
 
+# Loyalty-scheme labels per retailer.
+# Tesco uses Clubcard; Sainsbury's uses Nectar; others show a generic badge.
+_SCHEME_LABELS = {
+    'tesco': '🎫 CC',
+    'sainsburys': '🌟 Nectar',
+}
+
+
+def _member_scheme_label(retailer: str) -> str:
+    """Return a short display label for a retailer's loyalty scheme."""
+    return _SCHEME_LABELS.get(retailer.lower(), '🏷️ Member')
+
 
 def main():
     """Main CLI interface for the grocery price comparison engine."""
@@ -110,25 +122,40 @@ def main():
         print(f"💰 PRICE COMPARISON: {query_display}")
         print(f"{'='*80}\n")
         
-        print(f"{'Retailer':<15} {'Price':<10} {'Unit Price':<20} {'Product Name'}")
-        print(f"{'-'*80}")
-        
+        print(f"{'Retailer':<15} {'Price':<10} {'Member Price':<15} {'Unit Price':<20} {'Product Name'}")
+        print(f"{'-'*95}")
+
+        import re as _re
         for product in results:
             retailer = product['retailer'].upper()
             price = f"£{product['price']:.2f}" if isinstance(product['price'], (int, float)) else product['price']
-            
-            # Clean up unit price (remove duplicate prices)
+
+            # Member price — only show when it is strictly below shelf price.
+            member = product.get('member_price')
+            shelf_f = float(product['price']) if isinstance(product['price'], (int, float)) else 0
+            if member:
+                try:
+                    member_f = float(member)
+                    if member_f > 0 and member_f < shelf_f:
+                        scheme = _member_scheme_label(product['retailer'])
+                        member_str = f"{scheme} £{member_f:.2f}"
+                    else:
+                        member_str = ""
+                except (ValueError, TypeError):
+                    member_str = ""
+            else:
+                member_str = ""
+
+            # Clean up unit price
             unit_price = product.get('unit_price', 'N/A') or 'N/A'
             if unit_price != 'N/A' and '£' in unit_price:
-                # Extract just the unit price part (after /)
-                import re
-                unit_match = re.search(r'£[\d.]+\s*/\s*\w+', unit_price)
+                unit_match = _re.search(r'£[\d.]+\s*/\s*\w+', unit_price)
                 if unit_match:
                     unit_price = unit_match.group()
-            
+
             name = product['name'][:40] + '...' if len(product['name']) > 40 else product['name']
-            
-            print(f"{retailer:<15} {price:<10} {unit_price:<20} {name}")
+
+            print(f"{retailer:<15} {price:<10} {member_str:<15} {unit_price:<20} {name}")
         
         print(f"\n{'='*80}\n")
     
@@ -170,7 +197,11 @@ def main():
         
         for item in savings:
             product_name = item['product_name'][:37] + '...' if len(item['product_name']) > 37 else item['product_name']
-            cheapest = f"{item['cheapest_retailer'].upper()[:4]} £{item['cheapest_price']:.2f}"
+            if item.get('cheapest_is_member'):
+                cheap_label = _member_scheme_label(item['cheapest_retailer']) + " "
+            else:
+                cheap_label = ""
+            cheapest = f"{cheap_label}{item['cheapest_retailer'].upper()[:4]} £{item['cheapest_price']:.2f}"
             expensive = f"{item['expensive_retailer'].upper()[:4]} £{item['expensive_price']:.2f}"
             savings_str = f"£{item['savings_amount']:.2f}"
             percentage = f"{item['savings_percentage']:.1f}%"
