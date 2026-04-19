@@ -25,8 +25,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "http://127.0.0.1:3000",
-        "http://192.168.0.6:3000",
-        "http://172.20.10.9:3000",
+        "https://grocery-frontend-hr7sj8d70-hafiz-tiomoko-alis-projects.vercel.app",
+        "https://grocery-frontend.vercel.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],
