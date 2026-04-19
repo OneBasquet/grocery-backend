@@ -143,6 +143,21 @@ def basket_optimize(
     }
 
 
+@app.post("/seed")
+def seed(products: List[dict]):
+    """Bulk-insert products into the database. Accepts a JSON array of product dicts."""
+    inserted = 0
+    for p in products:
+        if not p.get("name") or not p.get("retailer"):
+            continue
+        try:
+            orchestrator.db.insert_product(p)
+            inserted += 1
+        except Exception:
+            continue
+    return {"inserted": inserted, "total": orchestrator.db.get_product_count()}
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("api.main:app", host="0.0.0.0", port=8000, reload=True)
