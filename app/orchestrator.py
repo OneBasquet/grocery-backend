@@ -195,9 +195,15 @@ class GroceryPriceOrchestrator:
                 if gtin_matches:
                     matching = gtin_matches[:limit]
                 else:
+                    # Split query into words; match products containing ALL words
+                    # in any order (e.g. "tesco milk" matches "Tesco British Whole Milk")
+                    words = search_query.lower().split()
                     matching = [
                         p for p in products
-                        if search_query.lower() in p['name'].lower() and p['price'] > 0
+                        if p['price'] > 0 and all(
+                            w in (p['name'].lower() + ' ' + (p.get('retailer') or '').lower())
+                            for w in words
+                        )
                     ][:limit]
             else:
                 # Return all products with valid prices (no limit)
