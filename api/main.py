@@ -20,13 +20,33 @@ MEMBER_SCHEME_LABELS = {
 
 app = FastAPI(title="Grocery Price API", version="1.0.0")
 
+ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://grocery-frontend-omega.vercel.app",
+]
+
+
+def _allow_origin(origin: str) -> bool:
+    if origin in ALLOWED_ORIGINS:
+        return True
+    # Allow all Vercel preview/deployment URLs for this project
+    if origin.endswith(".vercel.app") and "grocery-frontend" in origin:
+        return True
+    return False
+
+
+from starlette.middleware.cors import CORSMiddleware as _CORSMiddleware
+
+
+class DynamicCORSMiddleware(_CORSMiddleware):
+    def is_allowed_origin(self, origin: str) -> bool:
+        return _allow_origin(origin)
+
+
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "https://grocery-frontend-omega.vercel.app",
-    ],
+    DynamicCORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
