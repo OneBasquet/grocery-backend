@@ -2,6 +2,7 @@
 Database module for the grocery price comparison engine.
 Handles SQLite operations for product storage and retrieval.
 """
+import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -135,6 +136,20 @@ class Database:
                 ON products(retailer, name)
             """)
             
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS orders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    items TEXT NOT NULL,
+                    total_price REAL NOT NULL,
+                    retailer TEXT NOT NULL,
+                    address TEXT NOT NULL,
+                    delivery_time TEXT NOT NULL,
+                    phone TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
             print(f"✓ Database initialized at {self.db_path}")
     
     def insert_product(self, product_data: Dict[str, Any]) -> int:
@@ -333,8 +348,36 @@ class Database:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT * FROM products 
+                SELECT * FROM products
                 ORDER BY timestamp DESC
                 LIMIT ?
             """, (limit,))
             return [dict(row) for row in cursor.fetchall()]
+
+    def create_order(self, order_data: Dict[str, Any]) -> int:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO orders (items, total_price, retailer, address, delivery_time, phone, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                json.dumps(order_data.get("items", [])),
+                order_data["total_price"],
+                order_data["retailer"],
+                order_data["address"],
+                order_data["delivery_time"],
+                order_data.get("phone"),
+                order_data.get("status", "pending"),
+            ))
+            return cursor.lastrowid
+
+    def get_order(self, order_id: int) -> Optional[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM orders WHERE id = ?", (order_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            order = dict(row)
+            order["items"] = json.loads(order["items"])
+            return order

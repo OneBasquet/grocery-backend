@@ -145,13 +145,29 @@ def basket_optimize(
 
 @app.post("/order")
 def create_order(payload: dict):
-    """Accept a checkout order. Logs it and returns an order ID (MVP stub)."""
-    import uuid
-    order_id = str(uuid.uuid4())[:8]
-    print(f"[ORDER {order_id}] retailer={payload.get('retailer')} "
-          f"total=£{payload.get('total', 0):.2f} items={len(payload.get('items', []))} "
-          f"address={payload.get('address', '')[:40]}... "
-          f"slot={payload.get('delivery_time')} phone={payload.get('phone')}")
+    """Accept a checkout order, persist to DB, and return the order ID."""
+    required = ("items", "retailer", "total", "address", "delivery_time")
+    missing = [f for f in required if not payload.get(f)]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Missing fields: {missing}")
+
+    order_id = orchestrator.db.create_order({
+        "items": payload["items"],
+        "total_price": payload["total"],
+        "retailer": payload["retailer"],
+        "address": payload["address"],
+        "delivery_time": payload["delivery_time"],
+        "phone": payload.get("phone", ""),
+    })
+
+    retailer_upper = payload["retailer"].upper()
+    print(f"\n{'='*60}")
+    print(f"🚀 NEW ORDER RECEIVED FOR {retailer_upper}!")
+    print(f"   Order #{order_id} — £{payload['total']:.2f} — {len(payload['items'])} items")
+    print(f"   Address: {payload['address'][:60]}")
+    print(f"   Slot: {payload['delivery_time']} | Phone: {payload.get('phone', 'N/A')}")
+    print(f"{'='*60}\n")
+
     return {"order_id": order_id, "status": "confirmed"}
 
 
