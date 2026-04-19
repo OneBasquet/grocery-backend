@@ -187,11 +187,18 @@ class GroceryPriceOrchestrator:
             
             # Filter products matching search query and with valid prices
             if search_query:
-                # Filter by search query with limit per retailer
-                matching = [
-                    p for p in products 
-                    if search_query.lower() in p['name'].lower() and p['price'] > 0
-                ][:limit]
+                # Try GTIN exact match first, then fall back to name substring
+                gtin_matches = [
+                    p for p in products
+                    if p.get('gtin') and p['gtin'] == search_query and p['price'] > 0
+                ]
+                if gtin_matches:
+                    matching = gtin_matches[:limit]
+                else:
+                    matching = [
+                        p for p in products
+                        if search_query.lower() in p['name'].lower() and p['price'] > 0
+                    ][:limit]
             else:
                 # Return all products with valid prices (no limit)
                 matching = [p for p in products if p['price'] > 0]
