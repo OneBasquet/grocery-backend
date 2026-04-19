@@ -3,10 +3,53 @@ Database module for the grocery price comparison engine.
 Handles SQLite operations for product storage and retrieval.
 """
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from contextlib import contextmanager
+
+
+def format_time_ago(ts: Union[str, datetime, None]) -> Optional[str]:
+    """Turn a timestamp into a human-readable 'Updated X ago' string.
+
+    Accepts an ISO-8601 string or a datetime. Returns None if ts is falsy or
+    unparseable. Naive timestamps are assumed to be in the local timezone (that
+    is how SQLite's CURRENT_TIMESTAMP and datetime.now().isoformat() store them).
+    """
+    if not ts:
+        return None
+
+    if isinstance(ts, str):
+        try:
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    elif isinstance(ts, datetime):
+        dt = ts
+    else:
+        return None
+
+    now = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
+    delta = now - dt
+    seconds = int(delta.total_seconds())
+    if seconds < 0:
+        return "Updated just now"
+    if seconds < 60:
+        return "Updated just now"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"Updated {minutes} minute{'s' if minutes != 1 else ''} ago"
+    hours = minutes // 60
+    if hours < 24:
+        return f"Updated {hours} hour{'s' if hours != 1 else ''} ago"
+    days = hours // 24
+    if days < 30:
+        return f"Updated {days} day{'s' if days != 1 else ''} ago"
+    months = days // 30
+    if months < 12:
+        return f"Updated {months} month{'s' if months != 1 else ''} ago"
+    years = days // 365
+    return f"Updated {years} year{'s' if years != 1 else ''} ago"
 
 
 class Database:
