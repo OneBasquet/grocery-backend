@@ -86,12 +86,26 @@ def search(
     limit: int = Query(20, ge=1, le=200),
     live: bool = Query(False, description="If true, run live scrapers before searching"),
 ):
-    """Search matched products across all retailers."""
+    """Search matched products across all retailers.
+
+    If `live` is false and the DB returns 0 results, the response includes a
+    `hint` field suggesting the frontend can retry with `live=true`.
+    """
     try:
         if live:
             orchestrator.scrape_all_retailers(query, max_items=limit)
         results = orchestrator.compare_prices(query, limit=limit)
-        return {"query": query, "count": len(results), "results": [_decorate(p) for p in results]}
+
+        hint = None
+        if not results and not live:
+            hint = "no_cache"
+
+        return {
+            "query": query,
+            "count": len(results),
+            "results": [_decorate(p) for p in results],
+            **({"hint": hint} if hint else {}),
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
