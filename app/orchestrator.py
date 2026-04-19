@@ -195,24 +195,52 @@ class GroceryPriceOrchestrator:
                 if gtin_matches:
                     matching = gtin_matches[:limit]
                 else:
-                    # Split query into words; match products containing ALL words
-                    # in any order (e.g. "tesco milk" matches "Tesco British Whole Milk")
-                    words = search_query.lower().split()
-                    matching = [
-                        p for p in products
-                        if p['price'] > 0 and all(
-                            w in (p['name'].lower() + ' ' + (p.get('retailer') or '').lower())
-                            for w in words
-                        )
-                    ][:limit]
+                    from thefuzz import fuzz
+
+                    query_lower = search_query.lower()
+                    words = query_lower.split()
+                    scored = []
+
+                    for p in products:
+                        if p['price'] <= 0:
+                            continue
+                        name_lower = p['name'].lower()
+                        text = name_lower + ' ' + (p.get('retailer') or '').lower()
+
+                        # Tier 1: all words present (any order) — best
+                        if all(w in text for w in words):
+                            scored.append((p, 200))
+                            continue
+
+                        # Tier 2: fuzzy match on full query vs name
+                        ratio = fuzz.token_set_ratio(query_lower, name_lower)
+                        if ratio >= 60:
+                            scored.append((p, ratio))
+
+                    scored.sort(key=lambda x: x[1], reverse=True)
+                    matching = [p for p, _ in scored][:limit]
             else:
                 # Return all products with valid prices (no limit)
                 matching = [p for p in products if p['price'] > 0]
-            
+
             results.extend(matching)
-        
-        # Sort by price (ascending - cheapest first)
-        results.sort(key=lambda x: x['price'])
+
+        # Sort by relevance first (exact word matches), then price
+        # Re-score all results so sorting is consistent across retailers
+        from thefuzz import fuzz as _fuzz
+        query_lower = search_query.lower() if search_query else ""
+
+        def _sort_key(p):
+            if not query_lower:
+                return (0, p['price'])
+            text = p['name'].lower() + ' ' + (p.get('retailer') or '').lower()
+            words = query_lower.split()
+            has_all = all(w in text for w in words)
+            ratio = _fuzz.token_set_ratio(query_lower, p['name'].lower())
+            # Sort: exact word matches first, then by fuzzy score desc, then price asc
+            return (0 if has_all else 1, -ratio, p['price'])
+
+        results.sort(key=_sort_key)
         
         return results
     
