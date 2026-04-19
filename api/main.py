@@ -143,6 +143,18 @@ def basket_optimize(
     }
 
 
+@app.post("/order")
+def create_order(payload: dict):
+    """Accept a checkout order. Logs it and returns an order ID (MVP stub)."""
+    import uuid
+    order_id = str(uuid.uuid4())[:8]
+    print(f"[ORDER {order_id}] retailer={payload.get('retailer')} "
+          f"total=£{payload.get('total', 0):.2f} items={len(payload.get('items', []))} "
+          f"address={payload.get('address', '')[:40]}... "
+          f"slot={payload.get('delivery_time')} phone={payload.get('phone')}")
+    return {"order_id": order_id, "status": "confirmed"}
+
+
 @app.post("/seed")
 def seed(products: List[dict]):
     """Bulk-insert products into the database. Accepts a JSON array of product dicts."""
