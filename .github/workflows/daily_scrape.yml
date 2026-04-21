@@ -1,0 +1,43 @@
+name: Daily Warm Cache
+
+on:
+  schedule:
+    - cron: "0 3 * * *" # Every day at 3:00 AM UTC
+  workflow_dispatch: # Manual trigger from GitHub UI
+
+jobs:
+  warm-cache:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Trigger warm-cache on Render
+        run: |
+          echo "Triggering warm-cache at $(date -u)"
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://grocery-backend-i6yt.onrender.com/admin/warm-cache" \
+            -H "X-API-Key: ${{ secrets.ADMIN_API_KEY }}")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+
+          echo "Status: $HTTP_CODE"
+          echo "Response: $BODY"
+
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "::error::Warm-cache trigger failed with status $HTTP_CODE"
+            exit 1
+          fi
+
+      - name: Wait for scrape to complete
+        run: |
+          echo "Waiting 15 minutes for scrape to finish..."
+          sleep 900
+
+      - name: Check results
+        run: |
+          RESPONSE=$(curl -s \
+            "https://grocery-backend-i6yt.onrender.com/admin/warm-cache/status" \
+            -H "X-API-Key: ${{ secrets.ADMIN_API_KEY }}")
+
+          echo "Status: $RESPONSE"
