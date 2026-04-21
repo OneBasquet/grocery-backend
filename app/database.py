@@ -1,25 +1,27 @@
 """
 Database module for the grocery price comparison engine.
-Handles SQLite operations for product storage and retrieval.
+Supports PostgreSQL (Supabase) via SQLAlchemy, with SQLite fallback for local dev.
 """
 import json
-import sqlite3
-from datetime import datetime, timezone
-from pathlib import Path
+import os
+from datetime import datetime
 from typing import Optional, List, Dict, Any, Union
-from contextlib import contextmanager
 
+from sqlalchemy import (
+    create_engine, Column, Integer, Float, String, Text, DateTime, Boolean,
+    Index, text, inspect,
+)
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import sessionmaker, DeclarativeBase
+from sqlalchemy.sql import func
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
 
 def format_time_ago(ts: Union[str, datetime, None]) -> Optional[str]:
-    """Turn a timestamp into a human-readable 'Updated X ago' string.
-
-    Accepts an ISO-8601 string or a datetime. Returns None if ts is falsy or
-    unparseable. Naive timestamps are assumed to be in the local timezone (that
-    is how SQLite's CURRENT_TIMESTAMP and datetime.now().isoformat() store them).
-    """
+    """Turn a timestamp into a human-readable 'Updated X ago' string."""
     if not ts:
         return None
-
     if isinstance(ts, str):
         try:
             dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
@@ -53,331 +55,226 @@ def format_time_ago(ts: Union[str, datetime, None]) -> Optional[str]:
     return f"Updated {years} year{'s' if years != 1 else ''} ago"
 
 
+# ── SQLAlchemy models ────────────────────────────────────────────────────────
+
+class Base(DeclarativeBase):
+    pass
+
+
+class ProductModel(Base):
+    __tablename__ = "products"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    gtin = Column(String, nullable=True, index=True)
+    name = Column(String, nullable=False)
+    price = Column(Float, nullable=False)
+    unit_price = Column(String, nullable=True)
+    retailer = Column(String, nullable=False)
+    timestamp = Column(DateTime, default=func.now())
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    is_clubcard_price = Column(Integer, default=0)
+    normal_price = Column(Float, nullable=True)
+    member_price = Column(Float, nullable=True)
+
+    __table_args__ = (
+        Index("idx_retailer_name", "retailer", "name"),
+    )
+
+
+class OrderModel(Base):
+    __tablename__ = "orders"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    items = Column(Text, nullable=False)  # JSONB on Postgres, TEXT on SQLite
+    total_price = Column(Float, nullable=False)
+    retailer = Column(String, nullable=False)
+    address = Column(String, nullable=False)
+    delivery_time = Column(String, nullable=False)
+    phone = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="pending")
+    created_at = Column(DateTime, default=func.now())
+
+
+def _get_database_url() -> str:
+    """Resolve the database URL from environment, falling back to local SQLite."""
+    url = os.environ.get("DATABASE_URL", "")
+    if url:
+        # Supabase / Render sometimes use 'postgres://' which SQLAlchemy 2.x rejects
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql://", 1)
+        return url
+    return "sqlite:///products.db"
+
+
+def _is_postgres(url: str) -> bool:
+    return url.startswith("postgresql")
+
+
+# ── Database class (same public API as the old SQLite version) ───────────────
+
 class Database:
-    """SQLite database manager for grocery products."""
-    
+    """Database manager for grocery products. Works with PostgreSQL and SQLite."""
+
     def __init__(self, db_path: str = "products.db"):
-        """
-        Initialize the database connection.
-        
-        Args:
-            db_path: Path to the SQLite database file
-        """
-        self.db_path = Path(db_path)
-        self.connection = None
+        db_url = _get_database_url()
+
+        if _is_postgres(db_url):
+            self.engine = create_engine(db_url, pool_pre_ping=True, pool_size=5)
+            self._dialect = "postgresql"
+
+            # On Postgres, swap the orders.items column type to JSONB if not already
+            OrderModel.__table__.c.items.type = JSONB()
+        else:
+            self.engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+            self._dialect = "sqlite"
+
+        self.Session = sessionmaker(bind=self.engine)
         self._initialize_database()
-    
-    @contextmanager
-    def _get_connection(self):
-        """Context manager for database connections."""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        try:
-            yield conn
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            raise e
-        finally:
-            conn.close()
-    
+        self.db_path = db_path  # kept for compat with code that reads this attribute
+
+    @property
+    def is_postgres(self) -> bool:
+        return self._dialect == "postgresql"
+
     def _initialize_database(self):
-        """Create the products table if it doesn't exist."""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS products (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    gtin TEXT,
-                    name TEXT NOT NULL,
-                    price REAL NOT NULL,
-                    unit_price TEXT,
-                    retailer TEXT NOT NULL,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    is_clubcard_price INTEGER DEFAULT 0,
-                    normal_price REAL
-                )
-            """)
-            
-            # Migration: Add is_clubcard_price and normal_price columns if they don't exist
-            cursor.execute("PRAGMA table_info(products)")
-            columns = [col[1] for col in cursor.fetchall()]
-            
-            if 'is_clubcard_price' not in columns:
-                cursor.execute("""
-                    ALTER TABLE products ADD COLUMN is_clubcard_price INTEGER DEFAULT 0
-                """)
-                print("✓ Added 'is_clubcard_price' column to database")
-            
-            if 'normal_price' not in columns:
-                cursor.execute("""
-                    ALTER TABLE products ADD COLUMN normal_price REAL
-                """)
-                print("✓ Added 'normal_price' column to database")
+        """Create tables if they don't exist."""
+        Base.metadata.create_all(self.engine)
+        print(f"✓ Database initialized ({self._dialect})")
 
-            if 'member_price' not in columns:
-                cursor.execute("""
-                    ALTER TABLE products ADD COLUMN member_price REAL
-                """)
-                print("✓ Added 'member_price' column to database")
-            
-            # Create index on GTIN for faster lookups
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_gtin 
-                ON products(gtin) 
-                WHERE gtin IS NOT NULL
-            """)
-            
-            # Create index on retailer and name for fuzzy matching
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_retailer_name 
-                ON products(retailer, name)
-            """)
-            
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS orders (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    items TEXT NOT NULL,
-                    total_price REAL NOT NULL,
-                    retailer TEXT NOT NULL,
-                    address TEXT NOT NULL,
-                    delivery_time TEXT NOT NULL,
-                    phone TEXT,
-                    status TEXT NOT NULL DEFAULT 'pending',
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
+    def _row_to_dict(self, row) -> Dict[str, Any]:
+        """Convert an ORM model instance to a plain dict."""
+        d = {c.key: getattr(row, c.key) for c in row.__table__.columns}
+        # Ensure datetime fields are ISO strings for JSON serialisation
+        for k in ("timestamp", "created_at", "updated_at"):
+            if k in d and isinstance(d[k], datetime):
+                d[k] = d[k].isoformat()
+        return d
 
-            print(f"✓ Database initialized at {self.db_path}")
-    
+    # ── Products ─────────────────────────────────────────────────────────
+
     def insert_product(self, product_data: Dict[str, Any]) -> int:
-        """
-        Insert a new product into the database.
-        
-        Args:
-            product_data: Dictionary containing product information
-            
-        Returns:
-            int: The ID of the inserted product
-        """
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO products (gtin, name, price, unit_price, retailer, timestamp,
-                                      is_clubcard_price, normal_price, member_price)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                product_data.get('gtin'),
-                product_data['name'],
-                product_data['price'],
-                product_data.get('unit_price'),
-                product_data['retailer'],
-                product_data.get('timestamp', datetime.now().isoformat()),
-                product_data.get('is_clubcard_price', 0),
-                product_data.get('normal_price'),
-                product_data.get('member_price'),
-            ))
-            return cursor.lastrowid
-    
+        with self.Session() as s:
+            p = ProductModel(
+                gtin=product_data.get("gtin"),
+                name=product_data["name"],
+                price=product_data["price"],
+                unit_price=product_data.get("unit_price"),
+                retailer=product_data["retailer"],
+                timestamp=product_data.get("timestamp", datetime.now()),
+                is_clubcard_price=product_data.get("is_clubcard_price", 0),
+                normal_price=product_data.get("normal_price"),
+                member_price=product_data.get("member_price"),
+            )
+            s.add(p)
+            s.commit()
+            s.refresh(p)
+            return p.id
+
     def update_product_by_gtin(self, gtin: str, product_data: Dict[str, Any]) -> bool:
-        """
-        Update an existing product by GTIN.
-        
-        Args:
-            gtin: The GTIN to search for
-            product_data: Dictionary containing updated product information
-            
-        Returns:
-            bool: True if product was updated, False if not found
-        """
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE products
-                SET price = ?,
-                    unit_price = ?,
-                    name = ?,
-                    timestamp = ?,
-                    updated_at = CURRENT_TIMESTAMP,
-                    is_clubcard_price = ?,
-                    normal_price = ?,
-                    member_price = ?
-                WHERE gtin = ? AND retailer = ?
-            """, (
-                product_data['price'],
-                product_data.get('unit_price'),
-                product_data['name'],
-                product_data.get('timestamp', datetime.now().isoformat()),
-                product_data.get('is_clubcard_price', 0),
-                product_data.get('normal_price'),
-                product_data.get('member_price'),
-                gtin,
-                product_data['retailer']
-            ))
-            return cursor.rowcount > 0
-    
+        if not gtin:
+            return False
+        with self.Session() as s:
+            row = s.query(ProductModel).filter_by(gtin=gtin, retailer=product_data["retailer"]).first()
+            if not row:
+                return False
+            row.price = product_data["price"]
+            row.unit_price = product_data.get("unit_price")
+            row.name = product_data["name"]
+            row.timestamp = product_data.get("timestamp", datetime.now())
+            row.updated_at = datetime.now()
+            row.is_clubcard_price = product_data.get("is_clubcard_price", 0)
+            row.normal_price = product_data.get("normal_price")
+            row.member_price = product_data.get("member_price")
+            s.commit()
+            return True
+
     def update_product_by_id(self, product_id: int, product_data: Dict[str, Any]) -> bool:
-        """
-        Update an existing product by its primary key.
-        Used for fuzzy-matched products that have no GTIN.
-
-        Args:
-            product_id: The row id to update
-            product_data: Dictionary containing updated product information
-
-        Returns:
-            bool: True if a row was updated, False otherwise
-        """
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE products
-                SET price = ?,
-                    unit_price = ?,
-                    name = ?,
-                    timestamp = ?,
-                    updated_at = CURRENT_TIMESTAMP,
-                    is_clubcard_price = ?,
-                    normal_price = ?,
-                    member_price = ?
-                WHERE id = ?
-            """, (
-                product_data['price'],
-                product_data.get('unit_price'),
-                product_data['name'],
-                product_data.get('timestamp', datetime.now().isoformat()),
-                product_data.get('is_clubcard_price', 0),
-                product_data.get('normal_price'),
-                product_data.get('member_price'),
-                product_id,
-            ))
-            return cursor.rowcount > 0
+        with self.Session() as s:
+            row = s.query(ProductModel).get(product_id)
+            if not row:
+                return False
+            row.price = product_data["price"]
+            row.unit_price = product_data.get("unit_price")
+            row.name = product_data["name"]
+            row.timestamp = product_data.get("timestamp", datetime.now())
+            row.updated_at = datetime.now()
+            row.is_clubcard_price = product_data.get("is_clubcard_price", 0)
+            row.normal_price = product_data.get("normal_price")
+            row.member_price = product_data.get("member_price")
+            s.commit()
+            return True
 
     def find_product_by_gtin(self, gtin: str, retailer: str) -> Optional[Dict[str, Any]]:
-        """
-        Find a product by GTIN and retailer.
-        
-        Args:
-            gtin: The GTIN to search for
-            retailer: The retailer name
-            
-        Returns:
-            Dict containing product data or None if not found
-        """
         if not gtin:
             return None
-            
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM products 
-                WHERE gtin = ? AND retailer = ?
-                ORDER BY timestamp DESC
-                LIMIT 1
-            """, (gtin, retailer))
-            row = cursor.fetchone()
-            return dict(row) if row else None
-    
+        with self.Session() as s:
+            row = (
+                s.query(ProductModel)
+                .filter_by(gtin=gtin, retailer=retailer)
+                .order_by(ProductModel.timestamp.desc())
+                .first()
+            )
+            return self._row_to_dict(row) if row else None
+
     def find_similar_products(self, name: str, retailer: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """
-        Find products with similar names from the same retailer.
-        Used for fuzzy matching.
-        
-        Args:
-            name: Product name to search for
-            retailer: The retailer name
-            limit: Maximum number of results
-            
-        Returns:
-            List of dictionaries containing product data
-        """
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM products 
-                WHERE retailer = ? AND name LIKE ?
-                ORDER BY timestamp DESC
-                LIMIT ?
-            """, (retailer, f"%{name[:20]}%", limit))
-            return [dict(row) for row in cursor.fetchall()]
-    
+        with self.Session() as s:
+            rows = (
+                s.query(ProductModel)
+                .filter(ProductModel.retailer == retailer, ProductModel.name.ilike(f"%{name[:20]}%"))
+                .order_by(ProductModel.timestamp.desc())
+                .limit(limit)
+                .all()
+            )
+            return [self._row_to_dict(r) for r in rows]
+
     def get_all_products(self, retailer: Optional[str] = None) -> List[Dict[str, Any]]:
-        """
-        Get all products, optionally filtered by retailer.
-        
-        Args:
-            retailer: Optional retailer name to filter by
-            
-        Returns:
-            List of dictionaries containing product data
-        """
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
+        with self.Session() as s:
+            q = s.query(ProductModel)
             if retailer:
-                cursor.execute("""
-                    SELECT * FROM products 
-                    WHERE retailer = ?
-                    ORDER BY timestamp DESC
-                """, (retailer,))
-            else:
-                cursor.execute("""
-                    SELECT * FROM products 
-                    ORDER BY timestamp DESC
-                """)
-            return [dict(row) for row in cursor.fetchall()]
-    
+                q = q.filter_by(retailer=retailer)
+            rows = q.order_by(ProductModel.timestamp.desc()).all()
+            return [self._row_to_dict(r) for r in rows]
+
     def get_product_count(self) -> int:
-        """Get the total number of products in the database."""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM products")
-            return cursor.fetchone()[0]
-    
+        with self.Session() as s:
+            return s.query(ProductModel).count()
+
     def get_latest_products(self, limit: int = 10) -> List[Dict[str, Any]]:
-        """
-        Get the most recently added/updated products.
-        
-        Args:
-            limit: Maximum number of products to return
-            
-        Returns:
-            List of dictionaries containing product data
-        """
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM products
-                ORDER BY timestamp DESC
-                LIMIT ?
-            """, (limit,))
-            return [dict(row) for row in cursor.fetchall()]
+        with self.Session() as s:
+            rows = (
+                s.query(ProductModel)
+                .order_by(ProductModel.timestamp.desc())
+                .limit(limit)
+                .all()
+            )
+            return [self._row_to_dict(r) for r in rows]
+
+    # ── Orders ───────────────────────────────────────────────────────────
 
     def create_order(self, order_data: Dict[str, Any]) -> int:
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO orders (items, total_price, retailer, address, delivery_time, phone, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                json.dumps(order_data.get("items", [])),
-                order_data["total_price"],
-                order_data["retailer"],
-                order_data["address"],
-                order_data["delivery_time"],
-                order_data.get("phone"),
-                order_data.get("status", "pending"),
-            ))
-            return cursor.lastrowid
+        items = order_data.get("items", [])
+        with self.Session() as s:
+            o = OrderModel(
+                items=items if self.is_postgres else json.dumps(items),
+                total_price=order_data["total_price"],
+                retailer=order_data["retailer"],
+                address=order_data["address"],
+                delivery_time=order_data["delivery_time"],
+                phone=order_data.get("phone"),
+                status=order_data.get("status", "pending"),
+            )
+            s.add(o)
+            s.commit()
+            s.refresh(o)
+            return o.id
 
     def get_order(self, order_id: int) -> Optional[Dict[str, Any]]:
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM orders WHERE id = ?", (order_id,))
-            row = cursor.fetchone()
+        with self.Session() as s:
+            row = s.query(OrderModel).get(order_id)
             if not row:
                 return None
-            order = dict(row)
-            order["items"] = json.loads(order["items"])
+            order = self._row_to_dict(row)
+            if isinstance(order["items"], str):
+                order["items"] = json.loads(order["items"])
             return order
