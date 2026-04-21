@@ -55,6 +55,22 @@ def format_time_ago(ts: Union[str, datetime, None]) -> Optional[str]:
     return f"Updated {years} year{'s' if years != 1 else ''} ago"
 
 
+# ── Connection helpers (must be defined before models) ───────────────────────
+
+def _get_database_url() -> str:
+    """Resolve the database URL from environment, falling back to local SQLite."""
+    url = os.environ.get("DATABASE_URL", "")
+    if url:
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql://", 1)
+        return url
+    return "sqlite:///products.db"
+
+
+def _is_postgres(url: str = "") -> bool:
+    return (url or _get_database_url()).startswith("postgresql")
+
+
 # ── SQLAlchemy models ────────────────────────────────────────────────────────
 
 class Base(DeclarativeBase):
@@ -82,11 +98,18 @@ class ProductModel(Base):
     )
 
 
+def _items_column():
+    """Use JSONB on PostgreSQL, TEXT on SQLite."""
+    if _is_postgres(_get_database_url()):
+        return Column(JSONB, nullable=False)
+    return Column(Text, nullable=False)
+
+
 class OrderModel(Base):
     __tablename__ = "orders"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    items = Column(Text, nullable=False)  # JSONB on Postgres, TEXT on SQLite
+    items = _items_column()
     total_price = Column(Float, nullable=False)
     retailer = Column(String, nullable=False)
     address = Column(String, nullable=False)
@@ -94,21 +117,6 @@ class OrderModel(Base):
     phone = Column(String, nullable=True)
     status = Column(String, nullable=False, default="pending")
     created_at = Column(DateTime, default=func.now())
-
-
-def _get_database_url() -> str:
-    """Resolve the database URL from environment, falling back to local SQLite."""
-    url = os.environ.get("DATABASE_URL", "")
-    if url:
-        # Supabase / Render sometimes use 'postgres://' which SQLAlchemy 2.x rejects
-        if url.startswith("postgres://"):
-            url = url.replace("postgres://", "postgresql://", 1)
-        return url
-    return "sqlite:///products.db"
-
-
-def _is_postgres(url: str) -> bool:
-    return url.startswith("postgresql")
 
 
 # ── Database class (same public API as the old SQLite version) ───────────────
@@ -122,9 +130,6 @@ class Database:
         if _is_postgres(db_url):
             self.engine = create_engine(db_url, pool_pre_ping=True, pool_size=5)
             self._dialect = "postgresql"
-
-            # On Postgres, swap the orders.items column type to JSONB if not already
-            OrderModel.__table__.c.items.type = JSONB()
         else:
             self.engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
             self._dialect = "sqlite"
