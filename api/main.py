@@ -110,6 +110,90 @@ def search(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/search/grouped")
+def search_grouped(
+    query: str = Query(..., min_length=1, description="Product search term"),
+    limit: int = Query(20, ge=1, le=200),
+    threshold: int = Query(75, ge=50, le=100, description="Fuzzy match threshold for grouping"),
+):
+    """Search and group similar products across retailers for side-by-side comparison."""
+    from thefuzz import fuzz
+    import re
+
+    try:
+        results = orchestrator.compare_prices(query, limit=limit)
+        decorated = [_decorate(p) for p in results]
+
+        # Normalise name for grouping: lowercase, strip retailer-specific prefixes,
+        # collapse whitespace, keep size/quantity info.
+        def _normalise_for_group(name: str) -> str:
+            n = name.lower()
+            # Strip common retailer brand prefixes
+            for prefix in ("tesco", "asda", "sainsbury's", "sainsburys", "by sainsbury's"):
+                if n.startswith(prefix):
+                    n = n[len(prefix):].lstrip()
+            # Strip "own brand" / "essentials" / "everyday" etc.
+            for tag in ("finest", "own brand", "essentials", "everyday", "chosen by you",
+                        "extra special", "just essentials", "aldi", "lidl"):
+                n = n.replace(tag, "")
+            n = re.sub(r"\s+", " ", n).strip()
+            return n
+
+        # Build groups greedily: for each product, find or create a matching group
+        groups: list[dict] = []
+        group_keys: list[str] = []  # normalised name of each group's "anchor"
+
+        for product in decorated:
+            norm = _normalise_for_group(product["name"])
+            retailer = product.get("retailer", "").lower()
+
+            best_group_idx = -1
+            best_score = 0
+
+            for idx, key in enumerate(group_keys):
+                # Skip if this group already has an entry for this retailer
+                if retailer in groups[idx]["options"]:
+                    continue
+                score = fuzz.token_sort_ratio(norm, key)
+                if score >= threshold and score > best_score:
+                    best_score = score
+                    best_group_idx = idx
+
+            if best_group_idx >= 0:
+                groups[best_group_idx]["options"][retailer] = product
+            else:
+                groups.append({
+                    "display_name": product["name"],
+                    "_norm": norm,
+                    "options": {retailer: product},
+                })
+                group_keys.append(norm)
+
+        # Compute cheapest per group and clean up
+        output = []
+        for g in groups:
+            options = g["options"]
+            cheapest = min(options.items(), key=lambda kv: kv[1]["effective_price"])
+            output.append({
+                "display_name": g["display_name"],
+                "options": options,
+                "cheapest_retailer": cheapest[0],
+                "cheapest_price": cheapest[1]["effective_price"],
+                "retailer_count": len(options),
+            })
+
+        # Sort: groups with more retailers first, then by cheapest price
+        output.sort(key=lambda g: (-g["retailer_count"], g["cheapest_price"]))
+
+        return {
+            "query": query,
+            "group_count": len(output),
+            "groups": output,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/basket/optimize")
 def basket_optimize(
     ids: List[int] = Query(..., description="Product IDs to include in basket"),
