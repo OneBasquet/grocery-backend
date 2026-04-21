@@ -514,33 +514,9 @@ class AsdaPlaywrightScraper:
 
         with sync_playwright() as playwright:
             try:
-                try:
-                    browser = playwright.chromium.launch(
-                        channel="chrome",
-                        headless=self.headless,
-                        args=[
-                            "--disable-blink-features=AutomationControlled",
-                            "--no-sandbox",
-                            "--disable-dev-shm-usage",
-                            "--disable-crash-reporter",
-                            "--disable-breakpad",
-                        ],
-                    )
-                    if self.debug:
-                        print("  ✓ Using real Chrome browser")
-                except Exception:
-                    browser = playwright.chromium.launch(
-                        headless=self.headless,
-                        args=[
-                            "--disable-blink-features=AutomationControlled",
-                            "--no-sandbox",
-                            "--disable-dev-shm-usage",
-                            "--disable-crash-reporter",
-                            "--disable-breakpad",
-                        ],
-                    )
-                    if self.debug:
-                        print("  ℹ️ Using Chromium (Chrome not found)")
+                # Launch browser — cloud CDP or local
+                from scrapers.browser import get_browser
+                browser = get_browser(playwright, headless=self.headless)
 
                 context = browser.new_context(
                     user_agent=random.choice(self.USER_AGENTS),

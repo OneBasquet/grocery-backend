@@ -97,18 +97,9 @@ class SainsburysPlaywrightScraper:
         products = []
         
         with sync_playwright() as playwright:
-            # Launch browser with stealth settings
-            browser = playwright.chromium.launch(
-                headless=self.headless,
-                args=[
-                    '--disable-blink-features=AutomationControlled',
-                    '--no-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-crash-reporter',  # Disable Crashpad
-                    '--disable-breakpad',         # Disable crash reporting  
-                    '--disable-extensions'        # Disable extensions
-                ]
-            )
+            # Launch browser — cloud CDP or local
+            from scrapers.browser import get_browser
+            browser = get_browser(playwright, headless=self.headless)
             
             # Create context with custom user agent and extra headers
             context = browser.new_context(

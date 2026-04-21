@@ -474,17 +474,9 @@ class TescoPlaywrightScraper:
         
         with sync_playwright() as playwright:
             try:
-                # Launch Chromium with stealth settings
-                browser = playwright.chromium.launch(
-                    headless=self.headless,
-                    args=[
-                        "--disable-blink-features=AutomationControlled",
-                        "--no-sandbox",
-                        "--disable-dev-shm-usage",
-                        "--disable-crash-reporter",
-                        "--disable-breakpad",
-                    ],
-                )
+                # Launch browser — cloud CDP or local
+                from scrapers.browser import get_browser
+                browser = get_browser(playwright, headless=self.headless)
                 
                 # Create context with realistic settings
                 context = browser.new_context(
