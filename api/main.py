@@ -1,9 +1,12 @@
 """FastAPI gateway for the grocery price comparison engine."""
+import json
+import os
 import sys
+import time
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, FastAPI, Header as FastAPIHeader, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
@@ -399,6 +402,76 @@ def seed(products: List[dict]):
         except Exception:
             continue
     return {"inserted": inserted, "total": orchestrator.db.get_product_count()}
+
+
+ADMIN_API_KEY = os.environ.get("ADMIN_API_KEY", "onebasqet-warm-2026")
+SEED_ITEMS_PATH = Path(__file__).resolve().parent.parent / "config" / "seed_items.json"
+
+_warm_cache_running = False
+
+
+def _run_warm_cache(max_items: int = 20, delay: int = 10):
+    """Background task: iterate seed items and scrape all retailers."""
+    global _warm_cache_running
+    _warm_cache_running = True
+
+    with open(SEED_ITEMS_PATH) as f:
+        terms: list[str] = json.load(f)
+
+    total = len(terms)
+    print(f"\n{'='*60}")
+    print(f"  🔥 WARM-CACHE STARTED — {total} items")
+    print(f"{'='*60}\n")
+
+    for i, term in enumerate(terms, 1):
+        print(f"[warm-cache {i}/{total}] Scraping '{term}'...")
+        try:
+            stats = orchestrator.scrape_all_retailers(term, max_items=max_items)
+            scraped = sum(s.get("scraped", 0) for s in stats.values())
+            print(f"  -> {scraped} products scraped")
+        except Exception as e:
+            print(f"  -> FAILED: {e}")
+
+        if i < total:
+            time.sleep(delay)
+
+    db_stats = orchestrator.get_database_stats()
+    print(f"\n{'='*60}")
+    print(f"  🔥 WARM-CACHE COMPLETE — {db_stats['total_products']} total products")
+    print(f"{'='*60}\n")
+    _warm_cache_running = False
+
+
+@app.post("/admin/warm-cache")
+def warm_cache(
+    background_tasks: BackgroundTasks,
+    x_api_key: Optional[str] = FastAPIHeader(None),
+    max_items: int = Query(20, ge=1, le=50),
+    delay: int = Query(10, ge=5, le=30),
+):
+    """Trigger a background warm-cache job. Requires X-API-Key header."""
+    if x_api_key != ADMIN_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    if _warm_cache_running:
+        return {"status": "already_running", "message": "A warm-cache job is already in progress."}
+
+    background_tasks.add_task(_run_warm_cache, max_items=max_items, delay=delay)
+    return {
+        "status": "started",
+        "message": f"Warm-cache started for {len(json.loads(open(SEED_ITEMS_PATH).read()))} items with {delay}s delay.",
+    }
+
+
+@app.get("/admin/warm-cache/status")
+def warm_cache_status(x_api_key: Optional[str] = FastAPIHeader(None)):
+    """Check whether a warm-cache job is currently running."""
+    if x_api_key != ADMIN_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    return {
+        "running": _warm_cache_running,
+        **orchestrator.get_database_stats(),
+    }
 
 
 if __name__ == "__main__":
