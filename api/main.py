@@ -120,6 +120,78 @@ def search_grouped(
     from thefuzz import fuzz
     import re
 
+    # ── Conflict words: products with DIFFERENT values must never group ──
+    CONFLICT_SETS: list[set[str]] = [
+        # Milk type
+        {"whole", "semi", "semi-skimmed", "skimmed", "1%"},
+        # Organic vs conventional
+        {"organic"},
+        # Dietary / variant
+        {"unsweetened", "sweetened", "unsalted", "salted", "light", "diet", "zero",
+         "free range", "free-range", "oat", "almond", "soy", "soya", "coconut",
+         "lactose free", "lactose-free"},
+        # Fat content for yoghurt, etc.
+        {"fat free", "fat-free", "low fat", "low-fat", "full fat", "full-fat"},
+        # Bread type
+        {"white", "wholemeal", "wholegrain", "seeded", "sourdough", "brown", "multigrain"},
+    ]
+
+    # ── Unit/size patterns: extracted and compared as hard blockers ──
+    _SIZE_RE = re.compile(
+        r'(\d+(?:\.\d+)?)\s*'
+        r'(l|lt|ltr|litre|litres|liter|liters|ml|'
+        r'kg|kgs|kilogram|kilograms|g|gm|gms|gram|grams|'
+        r'pint|pints|pt|pts|'
+        r'pk|pack|packs|rolls|sheets|'
+        r'cl)\b',
+        re.IGNORECASE,
+    )
+
+    def _extract_sizes(text: str) -> set[str]:
+        """Return normalised size tokens, e.g. {'4pint', '2.272l'}."""
+        sizes: set[str] = set()
+        for m in _SIZE_RE.finditer(text):
+            qty = m.group(1)
+            unit = m.group(2).lower().rstrip("s")
+            # Normalise common aliases
+            if unit in ("lt", "ltr", "litre", "liter"):
+                unit = "l"
+            elif unit in ("gm", "gms", "gram"):
+                unit = "g"
+            elif unit in ("pt", "pint"):
+                unit = "pint"
+            elif unit in ("pk", "pack"):
+                unit = "pack"
+            elif unit in ("kg", "kilogram"):
+                unit = "kg"
+            sizes.add(f"{qty}{unit}")
+        return sizes
+
+    def _extract_conflict_tags(text: str) -> set[str]:
+        """Return the set of conflict words found in the text."""
+        lower = text.lower()
+        tags: set[str] = set()
+        for group in CONFLICT_SETS:
+            for word in group:
+                if word in lower:
+                    tags.add(word)
+                    break  # one match per conflict set is enough
+        return tags
+
+    def _can_group(name_a: str, name_b: str) -> bool:
+        """Return False if conflict words or sizes disagree."""
+        # Size check: if both have sizes, they must overlap
+        sizes_a = _extract_sizes(name_a)
+        sizes_b = _extract_sizes(name_b)
+        if sizes_a and sizes_b and sizes_a.isdisjoint(sizes_b):
+            return False
+        # Conflict-word check: tags must be identical
+        tags_a = _extract_conflict_tags(name_a)
+        tags_b = _extract_conflict_tags(name_b)
+        if tags_a != tags_b:
+            return False
+        return True
+
     try:
         results = orchestrator.compare_prices(query, limit=limit)
         decorated = [_decorate(p) for p in results]
@@ -128,31 +200,33 @@ def search_grouped(
         # collapse whitespace, keep size/quantity info.
         def _normalise_for_group(name: str) -> str:
             n = name.lower()
-            # Strip common retailer brand prefixes
             for prefix in ("tesco", "asda", "sainsbury's", "sainsburys", "by sainsbury's"):
                 if n.startswith(prefix):
                     n = n[len(prefix):].lstrip()
-            # Strip "own brand" / "essentials" / "everyday" etc.
             for tag in ("finest", "own brand", "essentials", "everyday", "chosen by you",
                         "extra special", "just essentials", "aldi", "lidl"):
                 n = n.replace(tag, "")
             n = re.sub(r"\s+", " ", n).strip()
             return n
 
-        # Build groups greedily: for each product, find or create a matching group
+        # Build groups greedily with conflict/size guards
         groups: list[dict] = []
-        group_keys: list[str] = []  # normalised name of each group's "anchor"
+        group_keys: list[str] = []
+        group_raw_names: list[str] = []  # un-normalised anchor name for conflict checks
 
         for product in decorated:
             norm = _normalise_for_group(product["name"])
+            raw_name = product["name"]
             retailer = product.get("retailer", "").lower()
 
             best_group_idx = -1
             best_score = 0
 
             for idx, key in enumerate(group_keys):
-                # Skip if this group already has an entry for this retailer
                 if retailer in groups[idx]["options"]:
+                    continue
+                # Hard blocker: conflict words or sizes mismatch
+                if not _can_group(raw_name, group_raw_names[idx]):
                     continue
                 score = fuzz.token_sort_ratio(norm, key)
                 if score >= threshold and score > best_score:
@@ -168,6 +242,7 @@ def search_grouped(
                     "options": {retailer: product},
                 })
                 group_keys.append(norm)
+                group_raw_names.append(raw_name)
 
         # Compute cheapest per group and clean up
         output = []
