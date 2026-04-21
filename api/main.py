@@ -269,51 +269,93 @@ def search_grouped(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/basket/optimize")
-def basket_optimize(
-    ids: List[int] = Query(..., description="Product IDs to include in basket"),
-):
-    """Return total basket cost per retailer using effective (member) prices."""
-    if not ids:
-        raise HTTPException(status_code=400, detail="At least one product id is required")
+# Free-delivery minimum spend thresholds (£)
+FREE_DELIVERY_THRESHOLDS = {
+    "tesco": 40.0,
+    "sainsburys": 40.0,
+    "asda": 40.0,
+}
 
-    products = {p["id"]: p for p in orchestrator.db.get_all_products() if p.get("id") in set(ids)}
-    missing = [pid for pid in ids if pid not in products]
+
+@app.post("/basket/optimize")
+def basket_optimize_post(payload: dict):
+    """Accept basket items with quantities and return optimised totals.
+
+    Body: { "items": [ { "id": 1, "quantity": 2 }, ... ] }
+    """
+    raw_items = payload.get("items", [])
+    if not raw_items:
+        raise HTTPException(status_code=400, detail="At least one item is required")
+
+    # Normalise input — accept both {id, quantity} dicts and plain ints
+    item_qty: dict[int, int] = {}
+    for entry in raw_items:
+        if isinstance(entry, dict):
+            pid = int(entry["id"])
+            qty = int(entry.get("quantity", 1))
+        else:
+            pid = int(entry)
+            qty = 1
+        item_qty[pid] = item_qty.get(pid, 0) + qty
+
+    all_products = {p["id"]: p for p in orchestrator.db.get_all_products() if p.get("id") in set(item_qty)}
+    missing = [pid for pid in item_qty if pid not in all_products]
     if missing:
         raise HTTPException(status_code=404, detail=f"Products not found: {missing}")
 
-    totals = {r: {"retailer": r, "total": 0.0, "items": [], "member_savings": 0.0}
+    totals = {r: {"retailer": r, "total": 0.0, "items": [], "member_savings": 0.0, "total_quantity": 0}
               for r in ("tesco", "sainsburys", "asda")}
 
-    for pid in ids:
-        p = products[pid]
+    for pid, qty in item_qty.items():
+        p = all_products[pid]
         retailer = (p.get("retailer") or "").lower()
         if retailer not in totals:
             continue
         item = _decorate(p)
+        item["quantity"] = qty
         shelf = float(p.get("price") or 0)
         effective = item["effective_price"]
+        line_total = effective * qty
         totals[retailer]["items"].append(item)
-        totals[retailer]["total"] += effective
+        totals[retailer]["total"] += line_total
+        totals[retailer]["total_quantity"] += qty
         if item["has_member_price"]:
-            totals[retailer]["member_savings"] += (shelf - effective)
+            totals[retailer]["member_savings"] += (shelf - effective) * qty
 
     breakdown = []
     for r, data in totals.items():
         data["total"] = round(data["total"], 2)
         data["member_savings"] = round(data["member_savings"], 2)
         data["item_count"] = len(data["items"])
+
+        # Delivery threshold
+        threshold = FREE_DELIVERY_THRESHOLDS.get(r, 40.0)
+        data["free_delivery_threshold"] = threshold
+        data["meets_free_delivery"] = data["total"] >= threshold
+        data["amount_to_free_delivery"] = round(max(0, threshold - data["total"]), 2)
+
         breakdown.append(data)
 
     available = [b for b in breakdown if b["item_count"] > 0]
     cheapest = min(available, key=lambda b: b["total"]) if available else None
 
     return {
-        "requested_ids": ids,
+        "requested_ids": list(item_qty.keys()),
         "cheapest_retailer": cheapest["retailer"] if cheapest else None,
         "cheapest_total": cheapest["total"] if cheapest else None,
         "breakdown": breakdown,
     }
+
+
+# Keep GET for backwards compatibility (frontend sends repeated ids)
+@app.get("/basket/optimize")
+def basket_optimize_get(
+    ids: List[int] = Query(..., description="Product IDs to include in basket"),
+):
+    """GET wrapper — converts repeated IDs into {id, quantity} and delegates to POST."""
+    from collections import Counter
+    counts = Counter(ids)
+    return basket_optimize_post({"items": [{"id": pid, "quantity": qty} for pid, qty in counts.items()]})
 
 
 @app.post("/order")
