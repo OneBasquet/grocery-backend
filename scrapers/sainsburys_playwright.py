@@ -98,11 +98,11 @@ class SainsburysPlaywrightScraper:
         
         with sync_playwright() as playwright:
             # Launch browser — cloud CDP or local
-            from scrapers.browser import get_browser
+            from scrapers.browser import get_browser, create_context
             browser = get_browser(playwright, headless=self.headless)
-            
-            # Create context with custom user agent and extra headers
-            context = browser.new_context(
+
+            # Create context with custom user agent, headers + proxy
+            context = create_context(browser,
                 user_agent=random.choice(self.USER_AGENTS),
                 viewport={'width': 1920, 'height': 1080},
                 locale='en-GB',

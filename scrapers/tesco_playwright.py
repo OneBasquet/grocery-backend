@@ -475,11 +475,11 @@ class TescoPlaywrightScraper:
         with sync_playwright() as playwright:
             try:
                 # Launch browser — cloud CDP or local
-                from scrapers.browser import get_browser
+                from scrapers.browser import get_browser, create_context
                 browser = get_browser(playwright, headless=self.headless)
-                
-                # Create context with realistic settings
-                context = browser.new_context(
+
+                # Create context with realistic settings + proxy
+                context = create_context(browser,
                     user_agent=random.choice(self.USER_AGENTS),
                     viewport={'width': 1920, 'height': 1080},
                     locale='en-GB',
