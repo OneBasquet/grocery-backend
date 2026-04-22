@@ -125,37 +125,107 @@ class SainsburysPlaywrightScraper:
             self._configure_stealth(page)
             
             try:
-                # Try going to homepage first (more human-like)
                 print(f"🔄 Scraping Sainsbury's: {search_query}")
                 print(f"🏠 First visiting homepage...")
-                
+
                 page.goto(self.base_url, wait_until='domcontentloaded', timeout=30000)
-                self._random_delay(2, 3)
-                
-                # Now navigate to search
-                search_url = f"{self.base_url}/gol-ui/SearchResults/{search_query}"
-                print(f"🌐 Now searching: {search_url}")
-                
-                page.goto(search_url, wait_until='domcontentloaded', timeout=30000)
-                
-                if self.debug:
-                    print(f"📄 Page title: {page.title()}")
-                    print(f"🔗 Current URL: {page.url}")
-                
                 self._random_delay(2, 4)
-                
-                # Handle cookie consent if present
+
+                # Handle cookie consent early
                 try:
-                    cookie_button = page.locator('button:has-text("Accept"), button:has-text("Accept all")')
-                    if cookie_button.count() > 0:
-                        cookie_button.first.click()
-                        self._random_delay(1, 2)
+                    for btn_sel in (
+                        '#onetrust-accept-btn-handler',
+                        'button:has-text("Accept All")',
+                        'button:has-text("Accept all")',
+                        'button:has-text("Accept")',
+                    ):
+                        btn = page.locator(btn_sel).first
+                        if btn.count() > 0:
+                            btn.click()
+                            self._random_delay(1, 2)
+                            break
                 except:
                     pass
-                
+
+                # Try multiple search URL patterns — Sainsbury's changes these
+                search_urls = [
+                    f"{self.base_url}/gol-ui/SearchResults/{search_query}",
+                    f"{self.base_url}/gol-ui/search/{search_query}",
+                    f"{self.base_url}/gol-ui/SearchDisplayView?searchTerm={search_query}",
+                ]
+
+                search_success = False
+                for search_url in search_urls:
+                    print(f"🌐 Trying: {search_url}")
+                    try:
+                        resp = page.goto(search_url, wait_until='domcontentloaded', timeout=30000)
+                        status = resp.status if resp else 0
+                        if status == 404 or status >= 500:
+                            print(f"  ⚠ HTTP {status}, trying next URL...")
+                            continue
+
+                        self._random_delay(3, 5)
+
+                        if self.debug:
+                            print(f"📄 Page title: {page.title()}")
+                            print(f"🔗 Current URL: {page.url}")
+
+                        # Wait for product content to render (JS-heavy site)
+                        try:
+                            page.wait_for_selector(
+                                '[data-testid="product-tile"], [class*="product"], [class*="pt-grid"]',
+                                timeout=10000,
+                            )
+                        except:
+                            pass
+
+                        search_success = True
+                        break
+                    except Exception as e:
+                        print(f"  ⚠ Failed: {e}")
+                        continue
+
+                if not search_success:
+                    # Last resort: use the search bar on the homepage
+                    print("🔍 Trying search bar fallback...")
+                    try:
+                        search_input = page.locator(
+                            'input[name="search-bar-input"], input[name="search"], '
+                            'input[type="search"], input[placeholder*="Search"]'
+                        ).first
+                        if search_input.count() > 0:
+                            search_input.click()
+                            self._random_delay(0.5, 1)
+                            search_input.fill(search_query)
+                            self._random_delay(0.5, 1)
+                            search_input.press("Enter")
+                            self._random_delay(3, 5)
+                            try:
+                                page.wait_for_selector(
+                                    '[data-testid="product-tile"], [class*="product"]',
+                                    timeout=10000,
+                                )
+                            except:
+                                pass
+                            search_success = True
+                            if self.debug:
+                                print(f"📄 Page title: {page.title()}")
+                                print(f"🔗 Current URL: {page.url}")
+                    except Exception as e:
+                        print(f"  ⚠ Search bar fallback failed: {e}")
+
                 # Scroll to load more products (lazy loading)
-                self._scroll_page(page)
-                
+                self._scroll_page(page, scrolls=5)
+                self._random_delay(1, 2)
+
+                # Take a debug screenshot
+                try:
+                    page.screenshot(path="sainsburys_debug_screenshot.png")
+                    if self.debug:
+                        print("📸 Screenshot saved: sainsburys_debug_screenshot.png")
+                except:
+                    pass
+
                 # Extract product data
                 products = self._extract_products(page, max_items)
                 
@@ -194,15 +264,24 @@ class SainsburysPlaywrightScraper:
         """
         products = []
         
-        # Sainsbury's product selectors - be more specific to avoid UI elements
+        # Sainsbury's product selectors — ordered most-specific to broadest.
+        # The site changes DOM structure periodically; keep multiple patterns.
         product_selectors = [
-            '[data-testid="product-tile"]',  # Most specific - actual product tiles
-            'article[data-testid*="product"]:not([data-testid*="filter"]):not([data-testid*="toolbar"])',  # Articles only
-            'li[data-testid*="product"]',  # List items
-            '[class*="productTile"]',  # Class with productTile
-            '[class*="product-tile"]',  # Kebab case
+            '[data-testid="product-tile"]',
+            'li[data-testid="product-tile"]',
+            '[data-testid="search-product-tile"]',
+            'article[data-testid*="product"]:not([data-testid*="filter"]):not([data-testid*="toolbar"])',
+            'li[data-testid*="product"]',
+            '[class*="pt-grid__item"]',
+            '[class*="productTile"]',
+            '[class*="product-tile"]',
+            '[class*="ProductCard"]',
+            '[class*="product_card"]',
             'article[class*="product"]',
-            '[data-testid*="product-"]'  # Hyphenated patterns like product-XXX
+            '[data-testid*="product-"]',
+            # Broader fallbacks
+            'ul[data-testid*="product"] > li',
+            'div[class*="search"] li[class]',
         ]
         
         # Try different selectors

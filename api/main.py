@@ -410,7 +410,8 @@ SEED_ITEMS_PATH = Path(__file__).resolve().parent.parent / "config" / "seed_item
 _warm_cache_running = False
 
 
-def _run_warm_cache(max_items: int = 20, delay: int = 10):
+def _run_warm_cache(max_items: int = 20, delay: int = 10,
+                    skip_retailers: Optional[list] = None):
     """Background task: iterate seed items and scrape all retailers."""
     global _warm_cache_running
     _warm_cache_running = True
@@ -421,12 +422,16 @@ def _run_warm_cache(max_items: int = 20, delay: int = 10):
     total = len(terms)
     print(f"\n{'='*60}")
     print(f"  🔥 WARM-CACHE STARTED — {total} items")
+    if skip_retailers:
+        print(f"  Skipping: {', '.join(skip_retailers)}")
     print(f"{'='*60}\n")
 
     for i, term in enumerate(terms, 1):
         print(f"[warm-cache {i}/{total}] Scraping '{term}'...")
         try:
-            stats = orchestrator.scrape_all_retailers(term, max_items=max_items)
+            stats = orchestrator.scrape_all_retailers(
+                term, max_items=max_items, skip_retailers=skip_retailers
+            )
             scraped = sum(s.get("scraped", 0) for s in stats.values())
             print(f"  -> {scraped} products scraped")
         except Exception as e:
@@ -448,6 +453,7 @@ def warm_cache(
     x_api_key: Optional[str] = FastAPIHeader(None),
     max_items: int = Query(20, ge=1, le=50),
     delay: int = Query(10, ge=5, le=30),
+    skip: List[str] = Query(default=[], description="Retailers to skip, e.g. skip=tesco"),
 ):
     """Trigger a background warm-cache job. Requires X-API-Key header."""
     if x_api_key != ADMIN_API_KEY:
@@ -456,11 +462,14 @@ def warm_cache(
     if _warm_cache_running:
         return {"status": "already_running", "message": "A warm-cache job is already in progress."}
 
-    background_tasks.add_task(_run_warm_cache, max_items=max_items, delay=delay)
-    return {
-        "status": "started",
-        "message": f"Warm-cache started for {len(json.loads(open(SEED_ITEMS_PATH).read()))} items with {delay}s delay.",
-    }
+    skip_list = [s.lower() for s in skip] if skip else None
+    background_tasks.add_task(_run_warm_cache, max_items=max_items, delay=delay,
+                              skip_retailers=skip_list)
+    terms_count = len(json.loads(open(SEED_ITEMS_PATH).read()))
+    msg = f"Warm-cache started for {terms_count} items with {delay}s delay."
+    if skip_list:
+        msg += f" Skipping: {', '.join(skip_list)}."
+    return {"status": "started", "message": msg}
 
 
 @app.get("/admin/warm-cache/status")

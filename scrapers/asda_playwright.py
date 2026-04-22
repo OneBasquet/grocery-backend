@@ -459,7 +459,7 @@ class AsdaPlaywrightScraper:
                 status = response.status if response else 0
 
                 if status in (403, 429):
-                    wait = (2 ** attempt) + random.uniform(1, 3)
+                    wait = (3 ** attempt) + random.uniform(2, 5)
                     if self.debug:
                         print(f"  ⚠ HTTP {status} - backing off {wait:.1f}s")
                     time.sleep(wait)
@@ -471,31 +471,47 @@ class AsdaPlaywrightScraper:
                 except Exception:
                     pass
 
-                # Dismiss cookie banner
-                for selector in (
-                    "button:has-text('Accept All Cookies')",
-                    "button:has-text('Accept all cookies')",
-                    "button:has-text('Accept All')",
-                    "button:has-text('Accept')",
-                    "#onetrust-accept-btn-handler",
-                ):
-                    try:
-                        page.click(selector, timeout=2000)
-                        time.sleep(0.5)
-                        break
-                    except Exception:
-                        continue
-
                 return True
 
             except Exception as exc:
-                wait = (2 ** attempt) + random.uniform(1, 3)
+                wait = (3 ** attempt) + random.uniform(2, 5)
                 if self.debug:
                     print(f"  ⚠ Error: {exc} - retrying in {wait:.1f}s")
                 time.sleep(wait)
 
+        # Fallback: try using the search bar from the homepage
         if self.debug:
-            print(f"  ❌ All {self.MAX_RETRIES} attempts failed")
+            print(f"  🔍 Trying search bar fallback...")
+        try:
+            # Extract search term from URL
+            search_term = url.split("/search/")[-1] if "/search/" in url else ""
+            if not search_term:
+                return False
+
+            search_input = page.locator(
+                'input[type="search"], input[name="searchTerm"], '
+                'input[placeholder*="Search"], input[id*="search"]'
+            ).first
+            if search_input.count() > 0:
+                search_input.click()
+                self._random_delay(0.5, 1)
+                search_input.fill(search_term)
+                self._random_delay(0.5, 1)
+                search_input.press("Enter")
+                self._random_delay(3, 5)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=15000)
+                except:
+                    pass
+                if self.debug:
+                    print(f"  ✓ Search bar navigation succeeded")
+                return True
+        except Exception as e:
+            if self.debug:
+                print(f"  ⚠ Search bar fallback failed: {e}")
+
+        if self.debug:
+            print(f"  ❌ All {self.MAX_RETRIES} attempts + fallback failed")
         return False
 
     # ------------------------------------------------------------------
@@ -540,6 +556,31 @@ class AsdaPlaywrightScraper:
                 page.on("response", self._on_response)
 
                 print(f"🔄 Scraping Asda: {search_query}")
+
+                # Visit homepage first to establish cookies/session — avoids
+                # immediate 403 on search pages from cloud browser IPs.
+                print(f"  🏠 Visiting homepage first...")
+                try:
+                    page.goto(self.base_url, wait_until="domcontentloaded", timeout=30000)
+                    self._random_delay(2, 4)
+
+                    # Dismiss cookie banner
+                    for selector in (
+                        "#onetrust-accept-btn-handler",
+                        "button:has-text('Accept All Cookies')",
+                        "button:has-text('Accept all cookies')",
+                        "button:has-text('Accept All')",
+                        "button:has-text('Accept')",
+                    ):
+                        try:
+                            page.click(selector, timeout=3000)
+                            self._random_delay(0.5, 1)
+                            break
+                        except Exception:
+                            continue
+                    print(f"  ✓ Homepage loaded")
+                except Exception as e:
+                    print(f"  ⚠ Homepage visit failed: {e}")
 
                 search_url = f"{self.base_url}/search/{search_query}"
                 success = self._navigate_with_retry(page, search_url)

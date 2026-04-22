@@ -65,66 +65,75 @@ class GroceryPriceOrchestrator:
             self._asda_scraper = AsdaPlaywrightScraper(headless=False)
         return self._asda_scraper
     
-    def scrape_all_retailers(self, search_query: str, max_items: int = 50) -> Dict[str, Any]:
+    def scrape_all_retailers(self, search_query: str, max_items: int = 50,
+                             skip_retailers: Optional[List[str]] = None) -> Dict[str, Any]:
         """
         Scrape all retailers for a given search query.
-        
+
         Args:
             search_query: Search term (e.g., "milk", "bread")
             max_items: Maximum items per retailer
-            
+            skip_retailers: List of retailer names to skip (e.g. ["tesco"])
+
         Returns:
             Dictionary with scraping statistics
         """
+        skip = set(r.lower() for r in (skip_retailers or []))
+
         print(f"\n{'='*60}")
         print(f"🛒 SCRAPING ALL RETAILERS: '{search_query}'")
+        if skip:
+            print(f"   Skipping: {', '.join(skip)}")
         print(f"{'='*60}\n")
-        
+
         total_stats = {
             'tesco': {'scraped': 0, 'inserted': 0, 'updated': 0, 'matched': 0, 'errors': 0},
             'sainsburys': {'scraped': 0, 'inserted': 0, 'updated': 0, 'matched': 0, 'errors': 0},
             'asda': {'scraped': 0, 'inserted': 0, 'updated': 0, 'matched': 0, 'errors': 0}
         }
-        
-        # Scrape Tesco (via Apify)
-        try:
-            tesco_products = self.tesco_scraper.scrape_search_results(search_query, max_items)
-            total_stats['tesco']['scraped'] = len(tesco_products)
-            
-            if tesco_products:
-                stats = self.normalizer.batch_insert_products(tesco_products, 'tesco')
-                total_stats['tesco'].update(stats)
-        except Exception as e:
-            print(f"✗ Tesco scraping failed: {e}")
-            total_stats['tesco']['errors'] = 1
-        
-        # Scrape Sainsbury's (via Playwright)
-        try:
-            sainsburys_products = self.sainsburys_scraper.scrape_search_results(search_query, max_items)
-            total_stats['sainsburys']['scraped'] = len(sainsburys_products)
-            
-            if sainsburys_products:
-                stats = self.normalizer.batch_insert_products(sainsburys_products, 'sainsburys')
-                total_stats['sainsburys'].update(stats)
-        except Exception as e:
-            print(f"✗ Sainsbury's scraping failed: {e}")
-            total_stats['sainsburys']['errors'] = 1
-        
-        # Scrape Asda (via Playwright)
-        try:
-            asda_products = self.asda_scraper.scrape_search_results(search_query, max_items)
-            total_stats['asda']['scraped'] = len(asda_products)
-            
-            if asda_products:
-                stats = self.normalizer.batch_insert_products(asda_products, 'asda')
-                total_stats['asda'].update(stats)
-        except Exception as e:
-            print(f"✗ Asda scraping failed: {e}")
-            total_stats['asda']['errors'] = 1
-        
+
+        # Scrape Tesco
+        if 'tesco' not in skip:
+            try:
+                tesco_products = self.tesco_scraper.scrape_search_results(search_query, max_items)
+                total_stats['tesco']['scraped'] = len(tesco_products)
+
+                if tesco_products:
+                    stats = self.normalizer.batch_insert_products(tesco_products, 'tesco')
+                    total_stats['tesco'].update(stats)
+            except Exception as e:
+                print(f"✗ Tesco scraping failed: {e}")
+                total_stats['tesco']['errors'] = 1
+
+        # Scrape Sainsbury's
+        if 'sainsburys' not in skip:
+            try:
+                sainsburys_products = self.sainsburys_scraper.scrape_search_results(search_query, max_items)
+                total_stats['sainsburys']['scraped'] = len(sainsburys_products)
+
+                if sainsburys_products:
+                    stats = self.normalizer.batch_insert_products(sainsburys_products, 'sainsburys')
+                    total_stats['sainsburys'].update(stats)
+            except Exception as e:
+                print(f"✗ Sainsbury's scraping failed: {e}")
+                total_stats['sainsburys']['errors'] = 1
+
+        # Scrape Asda
+        if 'asda' not in skip:
+            try:
+                asda_products = self.asda_scraper.scrape_search_results(search_query, max_items)
+                total_stats['asda']['scraped'] = len(asda_products)
+
+                if asda_products:
+                    stats = self.normalizer.batch_insert_products(asda_products, 'asda')
+                    total_stats['asda'].update(stats)
+            except Exception as e:
+                print(f"✗ Asda scraping failed: {e}")
+                total_stats['asda']['errors'] = 1
+
         # Print summary
         self._print_summary(total_stats)
-        
+
         return total_stats
     
     def scrape_retailer(self, retailer: str, search_query: str, max_items: int = 50) -> Dict[str, Any]:
