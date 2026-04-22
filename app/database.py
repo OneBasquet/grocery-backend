@@ -147,6 +147,18 @@ class Database:
         Base.metadata.create_all(self.engine)
         print(f"✓ Database initialized ({self._dialect})")
 
+    @staticmethod
+    def _to_datetime(val) -> datetime:
+        """Coerce a value to a datetime object. Accepts datetime, ISO string, or None."""
+        if isinstance(val, datetime):
+            return val
+        if isinstance(val, str):
+            try:
+                return datetime.fromisoformat(val.replace("Z", "+00:00"))
+            except ValueError:
+                return datetime.now()
+        return datetime.now()
+
     def _row_to_dict(self, row) -> Dict[str, Any]:
         """Convert an ORM model instance to a plain dict."""
         d = {c.key: getattr(row, c.key) for c in row.__table__.columns}
@@ -166,7 +178,7 @@ class Database:
                 price=product_data["price"],
                 unit_price=product_data.get("unit_price"),
                 retailer=product_data["retailer"],
-                timestamp=product_data.get("timestamp", datetime.now()),
+                timestamp=self._to_datetime(product_data.get("timestamp")),
                 is_clubcard_price=product_data.get("is_clubcard_price", 0),
                 normal_price=product_data.get("normal_price"),
                 member_price=product_data.get("member_price"),
@@ -186,7 +198,7 @@ class Database:
             row.price = product_data["price"]
             row.unit_price = product_data.get("unit_price")
             row.name = product_data["name"]
-            row.timestamp = product_data.get("timestamp", datetime.now())
+            row.timestamp = self._to_datetime(product_data.get("timestamp"))
             row.updated_at = datetime.now()
             row.is_clubcard_price = product_data.get("is_clubcard_price", 0)
             row.normal_price = product_data.get("normal_price")
@@ -202,7 +214,7 @@ class Database:
             row.price = product_data["price"]
             row.unit_price = product_data.get("unit_price")
             row.name = product_data["name"]
-            row.timestamp = product_data.get("timestamp", datetime.now())
+            row.timestamp = self._to_datetime(product_data.get("timestamp"))
             row.updated_at = datetime.now()
             row.is_clubcard_price = product_data.get("is_clubcard_price", 0)
             row.normal_price = product_data.get("normal_price")
