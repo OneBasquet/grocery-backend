@@ -469,12 +469,52 @@ class SainsburysPlaywrightScraper:
                 except Exception:
                     pass
 
-                # Navigate to search
-                search_url = f"{self.base_url}/gol-ui/SearchResults/{search_query}"
-                print(f"🌐 Searching: {search_url}")
+                # Use the search bar — more reliable than direct URL navigation
+                print(f"🔍 Using search bar for: {search_query}")
+                search_submitted = False
+                for input_sel in (
+                    'input[name="search-bar-input"]',
+                    'input[name="search"]',
+                    'input[type="search"]',
+                    'input[placeholder*="Search"]',
+                    'input[placeholder*="search"]',
+                    'input[id*="search"]',
+                    '#search-bar-input',
+                ):
+                    try:
+                        search_input = page.locator(input_sel).first
+                        if search_input.count() > 0:
+                            search_input.click()
+                            self._random_delay(0.5, 1)
+                            search_input.fill(search_query)
+                            self._random_delay(0.5, 1)
+                            search_input.press("Enter")
+                            search_submitted = True
+                            if self.debug:
+                                print(f"  ✓ Search submitted via '{input_sel}'")
+                            break
+                    except Exception:
+                        continue
 
-                page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
+                if not search_submitted:
+                    # Fallback: try direct URL navigation
+                    print("  ⚠ Search bar not found, trying direct URL...")
+                    for search_url in (
+                        f"{self.base_url}/gol-ui/SearchResults/{search_query}",
+                        f"{self.base_url}/gol-ui/search/{search_query}",
+                    ):
+                        try:
+                            page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
+                            break
+                        except Exception:
+                            continue
+
+                # Wait for search results to load
                 self._random_delay(3, 5)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=15000)
+                except Exception:
+                    pass
 
                 if self.debug:
                     print(f"📄 Page title: {page.title()}")
