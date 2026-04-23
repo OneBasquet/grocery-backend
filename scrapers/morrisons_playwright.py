@@ -366,7 +366,7 @@ class MorrisonsPlaywrightScraper:
             try:
                 print(f"🔄 Scraping Morrisons: {search_query}")
                 print(f"  🏠 Visiting homepage first...")
-                page.goto(self.base_url, wait_until="domcontentloaded", timeout=30000)
+                page.goto(self.base_url, wait_until="domcontentloaded", timeout=60000)
                 self._random_delay(2, 4)
 
                 # Dismiss cookies
