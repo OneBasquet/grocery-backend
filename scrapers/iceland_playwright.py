@@ -21,12 +21,13 @@ class IcelandPlaywrightScraper:
     ]
 
     PRODUCT_API_PATTERNS = (
+        "/algolia/products",
+        "/api/retailMedia/products",
+        "/api/icelandfoodsuk/ShopperProducts",
         "/search",
         "/product",
         "algolia",
         "klevu",
-        "SFCC",
-        "demandware",
     )
 
     SKIP_URL_FRAGMENTS = (
@@ -426,9 +427,13 @@ class IcelandPlaywrightScraper:
                     print(f"  🔗 URL: {page.url}")
 
                 self._human_like_scroll(page, steps=5)
-                self._random_delay(2, 3)
+                self._random_delay(3, 5)
                 self._human_like_scroll(page, steps=3)
-                self._random_delay(1, 2)
+                self._random_delay(3, 5)
+
+                # Third scroll + long wait — Iceland's Algolia APIs fire late
+                self._human_like_scroll(page, steps=2)
+                self._random_delay(3, 5)
 
                 if self.debug and self._all_json_urls:
                     print(f"\n  📋 All JSON URLs captured ({len(self._all_json_urls)}):")
@@ -441,6 +446,13 @@ class IcelandPlaywrightScraper:
                     if self.debug:
                         print("  ℹ️ No API data, trying HTML fallback...")
                     products = self._parse_html_fallback(page, max_items)
+
+                # If still nothing, wait a bit more and try API again (late responses)
+                if not products:
+                    if self.debug:
+                        print("  ⏳ Waiting for late API responses...")
+                    self._random_delay(5, 8)
+                    products = self._parse_api_products(max_items)
 
                 if not products and self.debug:
                     print("  ⚠ No products found via API or HTML")
