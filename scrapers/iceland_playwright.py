@@ -360,7 +360,7 @@ class IcelandPlaywrightScraper:
             try:
                 print(f"🔄 Scraping Iceland: {search_query}")
                 print(f"  🏠 Visiting homepage first...")
-                page.goto(self.base_url, wait_until="domcontentloaded", timeout=30000)
+                page.goto(self.base_url, wait_until="commit", timeout=30000)
                 self._random_delay(2, 4)
 
                 # Dismiss cookies
@@ -412,7 +412,7 @@ class IcelandPlaywrightScraper:
                     print("  ⚠ Search bar not found, trying direct URL...")
                     page.goto(
                         f"{self.base_url}/search?q={search_query}",
-                        wait_until="domcontentloaded", timeout=30000,
+                        wait_until="commit", timeout=30000,
                     )
 
                 self._random_delay(3, 5)

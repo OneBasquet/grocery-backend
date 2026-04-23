@@ -356,7 +356,7 @@ class WaitrosePlaywrightScraper:
             try:
                 print(f"🔄 Scraping Waitrose: {search_query}")
                 print(f"  🏠 Visiting homepage first...")
-                page.goto(self.base_url, wait_until="domcontentloaded", timeout=60000)
+                page.goto(self.base_url, wait_until="commit", timeout=60000)
                 self._random_delay(2, 4)
 
                 # Dismiss cookies
@@ -406,7 +406,7 @@ class WaitrosePlaywrightScraper:
                     print("  ⚠ Search bar not found, trying direct URL...")
                     page.goto(
                         f"{self.base_url}/ecom/shop/search?searchTerm={search_query}",
-                        wait_until="domcontentloaded", timeout=30000,
+                        wait_until="commit", timeout=30000,
                     )
 
                 self._random_delay(3, 5)
