@@ -379,12 +379,43 @@ class IcelandPlaywrightScraper:
                     except Exception:
                         continue
 
-                search_url = f"{self.base_url}/search?q={search_query}"
-                print(f"  🌐 Searching: {search_url}")
+                # Use search bar first — direct URLs often timeout or redirect
+                print(f"  🔍 Using search bar for: {search_query}")
+                self._api_responses.clear()
+                self._all_json_urls.clear()
 
-                page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
+                search_submitted = False
+                for input_sel in (
+                    'input[name="search"]',
+                    'input[type="search"]',
+                    'input[placeholder*="Search"]',
+                    'input[placeholder*="search"]',
+                    'input[id*="search"]',
+                    'input[aria-label*="Search"]',
+                ):
+                    try:
+                        search_input = page.locator(input_sel).first
+                        if search_input.count() > 0:
+                            search_input.click()
+                            self._random_delay(0.5, 1)
+                            search_input.fill(search_query)
+                            self._random_delay(0.5, 1)
+                            search_input.press("Enter")
+                            search_submitted = True
+                            if self.debug:
+                                print(f"  ✓ Search submitted via '{input_sel}'")
+                            break
+                    except Exception:
+                        continue
+
+                if not search_submitted:
+                    print("  ⚠ Search bar not found, trying direct URL...")
+                    page.goto(
+                        f"{self.base_url}/search?q={search_query}",
+                        wait_until="domcontentloaded", timeout=30000,
+                    )
+
                 self._random_delay(3, 5)
-
                 try:
                     page.wait_for_load_state("networkidle", timeout=15000)
                 except Exception:
