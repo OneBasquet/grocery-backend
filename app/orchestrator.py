@@ -11,9 +11,13 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from app.database import Database
 from app.normalizer import ProductNormalizer
-from scrapers.tesco_playwright import TescoPlaywrightScraper  # Using Playwright instead of Apify
+from scrapers.tesco_playwright import TescoPlaywrightScraper
 from scrapers.sainsburys_playwright import SainsburysPlaywrightScraper
 from scrapers.asda_playwright import AsdaPlaywrightScraper
+from scrapers.waitrose_playwright import WaitrosePlaywrightScraper
+from scrapers.morrisons_playwright import MorrisonsPlaywrightScraper
+from scrapers.ocado_playwright import OcadoPlaywrightScraper
+from scrapers.iceland_playwright import IcelandPlaywrightScraper
 
 
 class GroceryPriceOrchestrator:
@@ -36,6 +40,10 @@ class GroceryPriceOrchestrator:
         self._tesco_scraper = None
         self._sainsburys_scraper = None
         self._asda_scraper = None
+        self._waitrose_scraper = None
+        self._morrisons_scraper = None
+        self._ocado_scraper = None
+        self._iceland_scraper = None
     
     @property
     def tesco_scraper(self) -> TescoPlaywrightScraper:
@@ -61,9 +69,36 @@ class GroceryPriceOrchestrator:
     def asda_scraper(self) -> AsdaPlaywrightScraper:
         """Lazy load Asda scraper."""
         if self._asda_scraper is None:
-            # Use headless=False to avoid bot detection
             self._asda_scraper = AsdaPlaywrightScraper(headless=False)
         return self._asda_scraper
+
+    @property
+    def waitrose_scraper(self) -> WaitrosePlaywrightScraper:
+        """Lazy load Waitrose scraper."""
+        if self._waitrose_scraper is None:
+            self._waitrose_scraper = WaitrosePlaywrightScraper(headless=False)
+        return self._waitrose_scraper
+
+    @property
+    def morrisons_scraper(self) -> MorrisonsPlaywrightScraper:
+        """Lazy load Morrisons scraper."""
+        if self._morrisons_scraper is None:
+            self._morrisons_scraper = MorrisonsPlaywrightScraper(headless=False)
+        return self._morrisons_scraper
+
+    @property
+    def ocado_scraper(self) -> OcadoPlaywrightScraper:
+        """Lazy load Ocado scraper."""
+        if self._ocado_scraper is None:
+            self._ocado_scraper = OcadoPlaywrightScraper(headless=False)
+        return self._ocado_scraper
+
+    @property
+    def iceland_scraper(self) -> IcelandPlaywrightScraper:
+        """Lazy load Iceland scraper."""
+        if self._iceland_scraper is None:
+            self._iceland_scraper = IcelandPlaywrightScraper(headless=False)
+        return self._iceland_scraper
     
     def scrape_all_retailers(self, search_query: str, max_items: int = 50,
                              skip_retailers: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -86,50 +121,35 @@ class GroceryPriceOrchestrator:
             print(f"   Skipping: {', '.join(skip)}")
         print(f"{'='*60}\n")
 
-        total_stats = {
-            'tesco': {'scraped': 0, 'inserted': 0, 'updated': 0, 'matched': 0, 'errors': 0},
-            'sainsburys': {'scraped': 0, 'inserted': 0, 'updated': 0, 'matched': 0, 'errors': 0},
-            'asda': {'scraped': 0, 'inserted': 0, 'updated': 0, 'matched': 0, 'errors': 0}
+        ALL_RETAILERS = {
+            'tesco': ('Tesco', lambda: self.tesco_scraper),
+            'sainsburys': ('Sainsbury\'s', lambda: self.sainsburys_scraper),
+            'asda': ('Asda', lambda: self.asda_scraper),
+            'waitrose': ('Waitrose', lambda: self.waitrose_scraper),
+            'morrisons': ('Morrisons', lambda: self.morrisons_scraper),
+            'ocado': ('Ocado', lambda: self.ocado_scraper),
+            'iceland': ('Iceland', lambda: self.iceland_scraper),
         }
 
-        # Scrape Tesco
-        if 'tesco' not in skip:
+        total_stats = {
+            key: {'scraped': 0, 'inserted': 0, 'updated': 0, 'matched': 0, 'errors': 0}
+            for key in ALL_RETAILERS
+        }
+
+        for key, (display_name, get_scraper) in ALL_RETAILERS.items():
+            if key in skip:
+                continue
             try:
-                tesco_products = self.tesco_scraper.scrape_search_results(search_query, max_items)
-                total_stats['tesco']['scraped'] = len(tesco_products)
+                scraper = get_scraper()
+                products = scraper.scrape_search_results(search_query, max_items)
+                total_stats[key]['scraped'] = len(products)
 
-                if tesco_products:
-                    stats = self.normalizer.batch_insert_products(tesco_products, 'tesco')
-                    total_stats['tesco'].update(stats)
+                if products:
+                    stats = self.normalizer.batch_insert_products(products, key)
+                    total_stats[key].update(stats)
             except Exception as e:
-                print(f"✗ Tesco scraping failed: {e}")
-                total_stats['tesco']['errors'] = 1
-
-        # Scrape Sainsbury's
-        if 'sainsburys' not in skip:
-            try:
-                sainsburys_products = self.sainsburys_scraper.scrape_search_results(search_query, max_items)
-                total_stats['sainsburys']['scraped'] = len(sainsburys_products)
-
-                if sainsburys_products:
-                    stats = self.normalizer.batch_insert_products(sainsburys_products, 'sainsburys')
-                    total_stats['sainsburys'].update(stats)
-            except Exception as e:
-                print(f"✗ Sainsbury's scraping failed: {e}")
-                total_stats['sainsburys']['errors'] = 1
-
-        # Scrape Asda
-        if 'asda' not in skip:
-            try:
-                asda_products = self.asda_scraper.scrape_search_results(search_query, max_items)
-                total_stats['asda']['scraped'] = len(asda_products)
-
-                if asda_products:
-                    stats = self.normalizer.batch_insert_products(asda_products, 'asda')
-                    total_stats['asda'].update(stats)
-            except Exception as e:
-                print(f"✗ Asda scraping failed: {e}")
-                total_stats['asda']['errors'] = 1
+                print(f"✗ {display_name} scraping failed: {e}")
+                total_stats[key]['errors'] = 1
 
         # Print summary
         self._print_summary(total_stats)
@@ -191,9 +211,10 @@ class GroceryPriceOrchestrator:
         """
         results = []
         
-        for retailer in ['tesco', 'sainsburys', 'asda']:
+        all_retailer_keys = ['tesco', 'sainsburys', 'asda', 'waitrose', 'morrisons', 'ocado', 'iceland']
+        for retailer in all_retailer_keys:
             products = self.db.get_all_products(retailer)
-            
+
             # Filter products matching search query and with valid prices
             if search_query:
                 # Try GTIN exact match first, then fall back to name substring
@@ -281,7 +302,7 @@ class GroceryPriceOrchestrator:
         # Use ProductNormalizer.effective_price() so that any member/loyalty price
         # (e.g. Tesco Clubcard) is used when it is lower than the shelf price.
         retailers_data = {}
-        for retailer in ['tesco', 'sainsburys', 'asda']:
+        for retailer in all_retailer_keys:
             products = []
             for p in self.db.get_all_products(retailer):
                 if (p.get('price') or 0) <= 0:
@@ -408,17 +429,12 @@ class GroceryPriceOrchestrator:
         Returns:
             Dictionary with database statistics
         """
+        all_retailer_keys = ['tesco', 'sainsburys', 'asda', 'waitrose', 'morrisons', 'ocado', 'iceland']
         total = self.db.get_product_count()
-        tesco_count = len(self.db.get_all_products('tesco'))
-        sainsburys_count = len(self.db.get_all_products('sainsburys'))
-        asda_count = len(self.db.get_all_products('asda'))
-        
-        return {
-            'total_products': total,
-            'tesco': tesco_count,
-            'sainsburys': sainsburys_count,
-            'asda': asda_count
-        }
+        stats = {'total_products': total}
+        for r in all_retailer_keys:
+            stats[r] = len(self.db.get_all_products(r))
+        return stats
     
     def _print_summary(self, stats: Dict[str, Dict[str, int]]):
         """Print a summary of scraping results."""
