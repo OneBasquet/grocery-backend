@@ -387,9 +387,29 @@ class MorrisonsPlaywrightScraper:
 
                 # Use search bar — direct URL redirects to categories page
                 print(f"  🔍 Using search bar for: {search_query}")
-                # Clear any captured homepage API responses before searching
                 self._api_responses.clear()
                 self._all_json_urls.clear()
+
+                # Click search icon first to reveal the input
+                for icon_sel in (
+                    'button[aria-label*="Search"]',
+                    'button[aria-label*="search"]',
+                    'a[aria-label*="Search"]',
+                    '[data-testid*="search"]',
+                    '[class*="search-icon"]',
+                    '[class*="searchIcon"]',
+                    '[class*="search-btn"]',
+                ):
+                    try:
+                        icon = page.locator(icon_sel).first
+                        if icon.count() > 0 and icon.is_visible():
+                            icon.click()
+                            self._random_delay(1, 2)
+                            if self.debug:
+                                print(f"  ✓ Clicked search icon: '{icon_sel}'")
+                            break
+                    except Exception:
+                        continue
 
                 search_submitted = False
                 for input_sel in (
@@ -399,7 +419,11 @@ class MorrisonsPlaywrightScraper:
                     'input[placeholder*="search"]',
                     'input[id*="search"]',
                     'input[aria-label*="Search"]',
+                    'input[aria-label*="search"]',
                     '#search-input',
+                    'input[name="entry"]',
+                    'input[data-testid*="search"]',
+                    'input[class*="search"]',
                 ):
                     try:
                         search_input = page.locator(input_sel).first
