@@ -201,16 +201,39 @@ def search_grouped(
 
         # Normalise name for grouping: lowercase, strip retailer-specific prefixes,
         # collapse whitespace, keep size/quantity info.
+        RETAILER_PREFIXES = (
+            "tesco", "asda", "sainsbury's", "sainsburys", "by sainsbury's",
+            "waitrose", "morrisons", "ocado", "iceland",
+            "m&s", "marks & spencer",
+        )
+        BRAND_TAGS = (
+            "finest", "own brand", "essentials", "everyday", "chosen by you",
+            "extra special", "just essentials", "taste the difference",
+            "so organic", "aldi", "lidl", "by sainsbury's",
+        )
+
         def _normalise_for_group(name: str) -> str:
             n = name.lower()
-            for prefix in ("tesco", "asda", "sainsbury's", "sainsburys", "by sainsbury's"):
+            for prefix in RETAILER_PREFIXES:
                 if n.startswith(prefix):
                     n = n[len(prefix):].lstrip()
-            for tag in ("finest", "own brand", "essentials", "everyday", "chosen by you",
-                        "extra special", "just essentials", "aldi", "lidl"):
+            for tag in BRAND_TAGS:
                 n = n.replace(tag, "")
             n = re.sub(r"\s+", " ", n).strip()
             return n
+
+        def _clean_display_name(name: str) -> str:
+            """Strip retailer branding for a neutral group display name."""
+            n = name
+            for prefix in RETAILER_PREFIXES:
+                if n.lower().startswith(prefix):
+                    n = n[len(prefix):].lstrip()
+                    break
+            for tag in BRAND_TAGS:
+                n = re.sub(re.escape(tag), "", n, flags=re.IGNORECASE)
+            n = re.sub(r"\s+", " ", n).strip()
+            # Capitalise first letter
+            return n[0].upper() + n[1:] if n else n
 
         # Build groups greedily with conflict/size guards
         groups: list[dict] = []
@@ -240,7 +263,7 @@ def search_grouped(
                 groups[best_group_idx]["options"][retailer] = product
             else:
                 groups.append({
-                    "display_name": product["name"],
+                    "display_name": _clean_display_name(product["name"]),
                     "_norm": norm,
                     "options": {retailer: product},
                 })
