@@ -19,16 +19,17 @@ RUN playwright install --with-deps chromium
 # Xvfb: the scrapers launch Chromium *headed* (headless=False) for anti-bot
 # stealth, which needs an X display. Xvfb gives the container a virtual one.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends xvfb xauth \
+    && apt-get install -y --no-install-recommends xvfb \
     && rm -rf /var/lib/apt/lists/*
 
 # App source.
 COPY . .
 
+# Entrypoint starts Xvfb (DISPLAY=:99), then execs uvicorn.
+RUN chmod +x docker-entrypoint.sh
+
 # FastAPI listens on :80 inside the container; CloudFront origins to the EC2 host on :80.
 EXPOSE 80
 
-# Wrap uvicorn in a virtual display so headed Chromium can launch.
 # Single worker keeps memory down on a 1GB t3.micro. Scrapers run sequentially.
-CMD ["xvfb-run", "-a", "--server-args=-screen 0 1920x1080x24", \
-     "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "80", "--workers", "1"]
+CMD ["./docker-entrypoint.sh"]
