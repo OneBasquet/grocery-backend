@@ -29,6 +29,12 @@ ALLOWED_ORIGINS = [
     "https://grocery-frontend-omega.vercel.app",
 ]
 
+# Extra origins supplied at runtime (comma-separated), e.g. the CloudFront URL on AWS.
+# Lets us add the deployed frontend origin without editing/recompiling this file.
+ALLOWED_ORIGINS += [
+    o.strip() for o in os.getenv("EXTRA_ORIGINS", "").split(",") if o.strip()
+]
+
 
 def _allow_origin(origin: str) -> bool:
     if origin in ALLOWED_ORIGINS:
