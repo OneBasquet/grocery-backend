@@ -19,7 +19,7 @@ RUN playwright install --with-deps chromium
 # Xvfb: the scrapers launch Chromium *headed* (headless=False) for anti-bot
 # stealth, which needs an X display. Xvfb gives the container a virtual one.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends xvfb \
+    && apt-get install -y --no-install-recommends xvfb xauth \
     && rm -rf /var/lib/apt/lists/*
 
 # App source.
