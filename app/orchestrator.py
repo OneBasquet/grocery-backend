@@ -2,6 +2,7 @@
 Main orchestrator for the grocery price comparison engine.
 Coordinates scraping, normalization, and database operations.
 """
+import json
 import sys
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -18,6 +19,8 @@ from scrapers.waitrose_playwright import WaitrosePlaywrightScraper
 from scrapers.morrisons_playwright import MorrisonsPlaywrightScraper
 from scrapers.ocado_playwright import OcadoPlaywrightScraper
 from scrapers.iceland_playwright import IcelandPlaywrightScraper
+
+PEPESTO_RETAILERS_PATH = Path(__file__).resolve().parent.parent / "config" / "pepesto_retailers.json"
 
 
 class GroceryPriceOrchestrator:
@@ -198,6 +201,103 @@ class GroceryPriceOrchestrator:
         
         return stats
     
+    @staticmethod
+    def _pepesto_domain_map() -> Dict[str, str]:
+        with open(PEPESTO_RETAILERS_PATH) as f:
+            return json.load(f)
+
+    def sync_pepesto(self, retailer: str, catalog_path: Optional[str] = None,
+                      dry_run: bool = False, api_key: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Sync one retailer's Pepesto catalog into the database.
+
+        Confirmed against live data: Pepesto's catalog has no GTIN, and only
+        covers its own curated set of "common cooking ingredient" SKUs
+        (~1-2k per supermarket) across 5 UK chains (tesco, sainsburys, asda,
+        morrisons, waitrose — see config/pepesto_retailers.json; ocado and
+        iceland are confirmed NOT covered by Pepesto at all) — a supplement
+        to the scrapers for that subset of categories, not a replacement.
+        Rows are matched the same way ASDA's scraper output already is: by
+        name, via ProductNormalizer.insert_or_update_product()'s existing
+        fuzzy-match path, not a GTIN upsert.
+
+        Args:
+            retailer: Internal retailer key to store rows under (e.g. 'tesco'),
+                must be present in config/pepesto_retailers.json
+            catalog_path: Optional path to a JSON file holding a saved
+                pepesto_catalog response (for replay/testing). If omitted,
+                fetches live via PepestoClient using the configured domain.
+            dry_run: If True, parse and map but skip the DB write
+            api_key: Pepesto API key for live fetches. Defaults to
+                config.settings.PEPESTO_API_KEY if not given.
+
+        Returns:
+            {'fetched', 'mapped', 'inserted', 'updated', 'matched', 'errors'}
+        """
+        from app.pepesto_catalog import PepestoClient, load_catalog
+
+        domain_map = self._pepesto_domain_map()
+        if retailer not in domain_map:
+            raise ValueError(
+                f"'{retailer}' is not in config/pepesto_retailers.json. "
+                f"Pepesto-covered retailers: {list(domain_map.keys())}"
+            )
+
+        print(f"\n{'='*60}")
+        print(f"🥕 PEPESTO CATALOG SYNC: {retailer}{' (dry run)' if dry_run else ''}")
+        print(f"{'='*60}\n")
+
+        if catalog_path:
+            rows = load_catalog(catalog_path)
+        else:
+            from config.settings import PEPESTO_API_KEY
+            client = PepestoClient(api_key or PEPESTO_API_KEY)
+            rows = client.get_catalog(domain_map[retailer])
+
+        stats: Dict[str, Any] = {'fetched': len(rows)}
+
+        if dry_run:
+            mapped = [self.normalizer.normalize_pepesto_product(r, retailer) for r in rows]
+            mapped = [m for m in mapped if m]
+            stats.update({
+                'mapped': len(mapped), 'inserted': 0, 'updated': 0,
+                'matched': 0, 'errors': len(rows) - len(mapped),
+            })
+        else:
+            insert_stats = self.normalizer.batch_insert_pepesto_products(rows, retailer)
+            stats.update(insert_stats)
+            stats['mapped'] = insert_stats['inserted'] + insert_stats['updated'] + insert_stats['matched']
+
+        print(
+            f"{retailer.upper():<12} fetched={stats['fetched']:<6} mapped={stats['mapped']:<6} "
+            f"inserted={stats.get('inserted', 0):<6} updated={stats.get('updated', 0):<6} "
+            f"matched={stats.get('matched', 0):<6} errors={stats.get('errors', 0)}"
+        )
+        print(f"\n{'='*60}\n")
+        return stats
+
+    def sync_pepesto_all(self, dry_run: bool = False, skip_retailers: Optional[List[str]] = None,
+                          api_key: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
+        """
+        Sync every retailer listed in config/pepesto_retailers.json (live fetch).
+
+        Used by the /admin/pepesto-sync endpoint, mirroring how
+        scrape_all_retailers() backs /admin/warm-cache. A failure on one
+        retailer doesn't stop the others.
+        """
+        skip = set(r.lower() for r in (skip_retailers or []))
+        results: Dict[str, Dict[str, Any]] = {}
+        for retailer in self._pepesto_domain_map():
+            if retailer in skip:
+                continue
+            try:
+                results[retailer] = self.sync_pepesto(retailer, dry_run=dry_run, api_key=api_key)
+            except Exception as e:
+                print(f"✗ Pepesto sync failed for {retailer}: {e}")
+                results[retailer] = {'fetched': 0, 'mapped': 0, 'inserted': 0,
+                                      'updated': 0, 'matched': 0, 'errors': 1}
+        return results
+
     def compare_prices(self, search_query: str, limit: int = 10) -> List[Dict[str, Any]]:
         """
         Compare prices across all retailers for similar products.

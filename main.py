@@ -26,7 +26,7 @@ def main():
     
     parser.add_argument(
         'command',
-        choices=['scrape', 'compare', 'stats', 'savings', 'report'],
+        choices=['scrape', 'sync-pepesto', 'compare', 'stats', 'savings', 'report'],
         help='Command to execute'
     )
     
@@ -41,9 +41,10 @@ def main():
     parser.add_argument(
         '--retailer',
         '-r',
-        choices=['all', 'tesco', 'sainsburys', 'asda'],
+        choices=['all', 'tesco', 'sainsburys', 'asda', 'waitrose', 'morrisons', 'ocado', 'iceland'],
         default='all',
-        help='Retailer to scrape (default: all)'
+        help='Retailer to scrape, or (for sync-pepesto) the retailer a catalog file belongs to '
+             '(default: all — scrape only; sync-pepesto requires a specific retailer)'
     )
     
     parser.add_argument(
@@ -81,7 +82,19 @@ def main():
         action='store_true',
         help='Fetch GTINs from product detail pages (slower but more accurate for Sainsbury\'s)'
     )
-    
+
+    parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='For sync-pepesto: parse and map the catalog file but skip the database write'
+    )
+
+    parser.add_argument(
+        '--catalog-file',
+        type=str,
+        help='For sync-pepesto: path to a JSON file saved from a real pepesto_catalog tool call'
+    )
+
     args = parser.parse_args()
     
     # Initialize orchestrator
@@ -101,7 +114,27 @@ def main():
             orchestrator.scrape_all_retailers(args.query, args.max_items)
         else:
             orchestrator.scrape_retailer(args.retailer, args.query, args.max_items)
-    
+
+    elif args.command == 'sync-pepesto':
+        if args.catalog_file and args.retailer == 'all':
+            print("❌ Error: --catalog-file requires a specific --retailer "
+                  "(one catalog file = one retailer's export)")
+            return 1
+
+        try:
+            if args.retailer == 'all':
+                results = orchestrator.sync_pepesto_all(dry_run=args.dry_run)
+                total_errors = sum(r.get('errors', 0) for r in results.values())
+            else:
+                stats = orchestrator.sync_pepesto(args.retailer, args.catalog_file, dry_run=args.dry_run)
+                total_errors = stats.get('errors', 0)
+        except Exception as e:
+            print(f"❌ Pepesto sync failed: {e}")
+            return 1
+
+        if total_errors:
+            print(f"⚠ Completed with {total_errors} error(s) — see summary above.")
+
     elif args.command == 'compare':
         # Allow comparing all products if no query provided
         if args.query:

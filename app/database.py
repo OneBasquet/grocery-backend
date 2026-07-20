@@ -115,6 +115,7 @@ class ProductModel(Base):
     is_clubcard_price = Column(Integer, default=0)
     normal_price = Column(Float, nullable=True)
     member_price = Column(Float, nullable=True)
+    source = Column(String, nullable=False, default="scraper")
 
     __table_args__ = (
         Index("idx_retailer_name", "retailer", "name"),
@@ -175,7 +176,23 @@ class Database:
     def _initialize_database(self):
         """Create tables if they don't exist."""
         Base.metadata.create_all(self.engine)
+        # create_all() only creates missing tables — it never alters an existing
+        # one, so the 'source' column (added after 'products' already existed in
+        # deployed databases) needs an explicit backfill.
+        self._ensure_source_column()
         print(f"✓ Database initialized ({self._dialect})")
+
+    def _ensure_source_column(self) -> None:
+        """Add the 'source' column to an existing products table if it predates it."""
+        inspector = inspect(self.engine)
+        if "products" not in inspector.get_table_names():
+            return
+        existing_cols = {c["name"] for c in inspector.get_columns("products")}
+        if "source" in existing_cols:
+            return
+        with self.engine.begin() as conn:
+            conn.execute(text("ALTER TABLE products ADD COLUMN source VARCHAR DEFAULT 'scraper'"))
+        print("✓ Added 'source' column to existing products table")
 
     @staticmethod
     def _to_datetime(val) -> datetime:
@@ -212,6 +229,7 @@ class Database:
                 is_clubcard_price=product_data.get("is_clubcard_price", 0),
                 normal_price=product_data.get("normal_price"),
                 member_price=product_data.get("member_price"),
+                source=product_data.get("source", "scraper"),
             )
             s.add(p)
             s.commit()
@@ -233,6 +251,7 @@ class Database:
             row.is_clubcard_price = product_data.get("is_clubcard_price", 0)
             row.normal_price = product_data.get("normal_price")
             row.member_price = product_data.get("member_price")
+            row.source = product_data.get("source", row.source)
             s.commit()
             return True
 
@@ -249,6 +268,7 @@ class Database:
             row.is_clubcard_price = product_data.get("is_clubcard_price", 0)
             row.normal_price = product_data.get("normal_price")
             row.member_price = product_data.get("member_price")
+            row.source = product_data.get("source", row.source)
             s.commit()
             return True
 

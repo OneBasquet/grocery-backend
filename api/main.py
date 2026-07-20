@@ -512,6 +512,73 @@ def warm_cache_status(x_api_key: Optional[str] = FastAPIHeader(None)):
     }
 
 
+_pepesto_sync_running = False
+_pepesto_sync_last_result: Optional[dict] = None
+
+
+def _run_pepesto_sync(skip_retailers: Optional[list] = None):
+    """Background task: sync every Pepesto-covered retailer (see config/pepesto_retailers.json)."""
+    global _pepesto_sync_running, _pepesto_sync_last_result
+    _pepesto_sync_running = True
+
+    print(f"\n{'='*60}")
+    print("  🥕 PEPESTO SYNC STARTED")
+    if skip_retailers:
+        print(f"  Skipping: {', '.join(skip_retailers)}")
+    print(f"{'='*60}\n")
+
+    try:
+        results = orchestrator.sync_pepesto_all(skip_retailers=skip_retailers)
+        _pepesto_sync_last_result = results
+        total_mapped = sum(r.get("mapped", 0) for r in results.values())
+        print(f"\n{'='*60}")
+        print(f"  🥕 PEPESTO SYNC COMPLETE — {total_mapped} products mapped across "
+              f"{len(results)} retailer(s)")
+        print(f"{'='*60}\n")
+    except Exception as e:
+        _pepesto_sync_last_result = {"error": str(e)}
+        print(f"  -> FAILED: {e}")
+    finally:
+        _pepesto_sync_running = False
+
+
+@app.post("/admin/pepesto-sync")
+def pepesto_sync(
+    background_tasks: BackgroundTasks,
+    x_api_key: Optional[str] = FastAPIHeader(None),
+    skip: List[str] = Query(default=[], description="Retailers to skip, e.g. skip=waitrose"),
+):
+    """Trigger a background Pepesto catalog sync for every covered retailer.
+
+    Requires X-API-Key header. Mirrors /admin/warm-cache's shape so it can be
+    triggered the same way (e.g. from the daily GitHub Actions cron).
+    """
+    if x_api_key != ADMIN_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    if _pepesto_sync_running:
+        return {"status": "already_running", "message": "A Pepesto sync is already in progress."}
+
+    skip_list = [s.lower() for s in skip] if skip else None
+    background_tasks.add_task(_run_pepesto_sync, skip_retailers=skip_list)
+    retailers = list(orchestrator._pepesto_domain_map().keys())
+    if skip_list:
+        retailers = [r for r in retailers if r not in skip_list]
+    return {"status": "started", "message": f"Pepesto sync started for: {', '.join(retailers)}"}
+
+
+@app.get("/admin/pepesto-sync/status")
+def pepesto_sync_status(x_api_key: Optional[str] = FastAPIHeader(None)):
+    """Check whether a Pepesto sync is currently running, and its last result."""
+    if x_api_key != ADMIN_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    return {
+        "running": _pepesto_sync_running,
+        "last_result": _pepesto_sync_last_result,
+        **orchestrator.get_database_stats(),
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("api.main:app", host="0.0.0.0", port=8000, reload=True)

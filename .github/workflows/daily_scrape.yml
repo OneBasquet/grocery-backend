@@ -8,7 +8,7 @@ on:
 jobs:
   warm-cache:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
 
     steps:
       - name: Trigger warm-cache on Render
@@ -38,6 +38,37 @@ jobs:
         run: |
           RESPONSE=$(curl -s \
             "https://grocery-backend-i6yt.onrender.com/admin/warm-cache/status" \
+            -H "X-API-Key: ${{ secrets.ADMIN_API_KEY }}")
+
+          echo "Status: $RESPONSE"
+
+      - name: Trigger Pepesto catalog sync
+        run: |
+          echo "Triggering Pepesto sync at $(date -u)"
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://grocery-backend-i6yt.onrender.com/admin/pepesto-sync" \
+            -H "X-API-Key: ${{ secrets.ADMIN_API_KEY }}")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+
+          echo "Status: $HTTP_CODE"
+          echo "Response: $BODY"
+
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "::error::Pepesto sync trigger failed with status $HTTP_CODE"
+            exit 1
+          fi
+
+      - name: Wait for Pepesto sync to complete
+        run: |
+          echo "Waiting 5 minutes for Pepesto sync to finish..."
+          sleep 300
+
+      - name: Check Pepesto sync results
+        run: |
+          RESPONSE=$(curl -s \
+            "https://grocery-backend-i6yt.onrender.com/admin/pepesto-sync/status" \
             -H "X-API-Key: ${{ secrets.ADMIN_API_KEY }}")
 
           echo "Status: $RESPONSE"

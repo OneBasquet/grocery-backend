@@ -48,6 +48,94 @@ class ProductNormalizer:
         
         return normalized
     
+    def normalize_pepesto_product(self, raw: Dict[str, Any], retailer: str) -> Optional[Dict[str, Any]]:
+        """
+        Map one real-SKU item from a Pepesto catalog export (see
+        app/pepesto_catalog.load_catalog(), which already drops
+        category-page entries) to our internal product shape.
+
+        Confirmed against live data: Pepesto's catalog has no GTIN/barcode
+        field at all, so — like ASDA's scraper output, which also has no
+        GTIN — these rows go through the existing name-based fuzzy-match
+        path in insert_or_update_product() rather than a GTIN upsert.
+
+        `entity_name` (Pepesto's internal ingredient-taxonomy label) is
+        deliberately never read here: it's confirmed unreliable, sometimes
+        naming a completely different product than `names.en` (e.g.
+        entity_name "Sunflower oil" paired with names.en "Organic Jumbo Oats").
+
+        Args:
+            raw: One raw product dict from load_catalog()
+            retailer: Our internal retailer key (e.g. 'tesco')
+
+        Returns:
+            Normalized product dict (same shape as normalize_product(), plus
+            source='pepesto' and gtin=None), or None if the row is unusable
+            (no name, or a non-numeric price).
+        """
+        name = ((raw.get('names') or {}).get('en') or '').strip()
+        if not name:
+            return None
+
+        price_pence = raw.get('price')
+        if not isinstance(price_pence, (int, float)):
+            return None
+        price = round(price_pence / 100, 2)
+
+        return {
+            'gtin': None,
+            'name': self._clean_name(name),
+            'price': price,
+            'unit_price': self._pepesto_unit_price(price, raw.get('quantity'), raw.get('quantity_str')),
+            'retailer': retailer.lower(),
+            'timestamp': datetime.now().isoformat(),
+            'is_clubcard_price': 0,
+            'normal_price': None,
+            'member_price': None,
+            'source': 'pepesto',
+        }
+
+    @staticmethod
+    def _pepesto_unit_price(price: float, quantity: Optional[Dict[str, Any]],
+                             quantity_str: Optional[str]) -> Optional[str]:
+        """Derive a '<value>/kg' or '<value>/litre' string from Pepesto's structured quantity.
+
+        Prefers the structured `quantity` field (accurate_grams, or a
+        Milliliters/HundredGrams unit count); falls back to parsing
+        `quantity_str` (e.g. "1kg", "250ml") if that's absent or unrecognised.
+        """
+        grams = litres = None
+
+        if isinstance(quantity, dict):
+            accurate_grams = quantity.get('accurate_grams')
+            if isinstance(accurate_grams, (int, float)) and accurate_grams > 0:
+                grams = accurate_grams
+            else:
+                unit = quantity.get('Unit') or {}
+                if isinstance(unit.get('Milliliters'), (int, float)):
+                    litres = unit['Milliliters'] / 1000
+                elif isinstance(unit.get('HundredGrams'), (int, float)) and unit['HundredGrams'] > 0:
+                    grams = unit['HundredGrams'] * 100
+
+        if grams is None and litres is None and quantity_str:
+            m = re.match(r'([\d.]+)\s*(kg|g|l|ml)\b', quantity_str.strip(), re.I)
+            if m:
+                value, unit = float(m.group(1)), m.group(2).lower()
+                if unit == 'kg':
+                    grams = value * 1000
+                elif unit == 'g':
+                    grams = value
+                elif unit == 'l':
+                    litres = value
+                elif unit == 'ml':
+                    litres = value / 1000
+
+        if grams:
+            return f"{price / (grams / 1000):.2f}/kg"
+        if litres:
+            return f"{price / litres:.2f}/litre"
+        return None
+
     def _extract_gtin(self, data: Dict[str, Any]) -> Optional[str]:
         """
         Extract GTIN from various possible fields.
@@ -308,5 +396,37 @@ class ProductNormalizer:
             except Exception as e:
                 print(f"Error processing product: {e}")
                 stats['errors'] += 1
-        
+
+        return stats
+
+    def batch_insert_pepesto_products(self, raw_products: List[Dict[str, Any]], retailer: str) -> Dict[str, int]:
+        """
+        Like batch_insert_products(), but for pre-filtered Pepesto catalog
+        rows (see app/pepesto_catalog.load_catalog()), using
+        normalize_pepesto_product() instead of the scraper-oriented
+        normalize_product(). Rows with no GTIN — which is all of them, see
+        normalize_pepesto_product() — go through insert_or_update_product()'s
+        existing name-based fuzzy-match path.
+
+        Args:
+            raw_products: Rows from load_catalog()
+            retailer: Internal retailer key to store these under
+
+        Returns:
+            Dictionary with counts of inserted, updated, matched, and errored products
+        """
+        stats = {'inserted': 0, 'updated': 0, 'matched': 0, 'errors': 0}
+
+        for raw in raw_products:
+            try:
+                normalized = self.normalize_pepesto_product(raw, retailer)
+                if normalized is None:
+                    stats['errors'] += 1
+                    continue
+                action, _ = self.insert_or_update_product(normalized)
+                stats[action] += 1
+            except Exception as e:
+                print(f"Error processing Pepesto product: {e}")
+                stats['errors'] += 1
+
         return stats
