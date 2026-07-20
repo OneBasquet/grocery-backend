@@ -9,7 +9,7 @@ from typing import Optional, List, Dict, Any, Union
 
 from sqlalchemy import (
     create_engine, Column, Integer, Float, String, Text, DateTime, Boolean,
-    Index, text, inspect,
+    Index, text, inspect, event,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
@@ -59,7 +59,7 @@ def format_time_ago(ts: Union[str, datetime, None]) -> Optional[str]:
 
 def _get_database_url() -> str:
     """Resolve the database URL from environment, falling back to local SQLite."""
-    url = os.environ.get("DATABASE_URL", "")
+    url = os.environ.get("DATABASE_URL") or os.environ.get("AWS_DATABASE_URL", "")
     if url:
         if url.startswith("postgres://"):
             url = url.replace("postgres://", "postgresql://", 1)
@@ -69,6 +69,29 @@ def _get_database_url() -> str:
 
 def _is_postgres(url: str = "") -> bool:
     return (url or _get_database_url()).startswith("postgresql")
+
+
+def _uses_iam_auth() -> bool:
+    """AWS_DATABASE_URL (no static password) authenticates via short-lived IAM tokens."""
+    return bool(os.environ.get("AWS_DATABASE_URL")) and not os.environ.get("DATABASE_URL")
+
+
+def _attach_iam_token_provider(engine, db_url: str) -> None:
+    """Supply a fresh 15-minute IAM auth token as the password for each new pooled connection."""
+    import boto3
+    from urllib.parse import urlparse
+
+    parsed = urlparse(db_url)
+    region = os.environ.get("AWS_REGION", "us-east-1")
+    rds_client = boto3.client("rds", region_name=region)
+
+    @event.listens_for(engine, "do_connect")
+    def _provide_iam_token(dialect, conn_rec, cargs, cparams):
+        cparams["password"] = rds_client.generate_db_auth_token(
+            DBHostname=parsed.hostname,
+            Port=parsed.port or 5432,
+            DBUsername=parsed.username,
+        )
 
 
 # ── SQLAlchemy models ────────────────────────────────────────────────────────
@@ -128,7 +151,14 @@ class Database:
         db_url = _get_database_url()
 
         if _is_postgres(db_url):
-            self.engine = create_engine(db_url, pool_pre_ping=True, pool_size=5)
+            self.engine = create_engine(
+                db_url,
+                pool_pre_ping=True,
+                pool_size=5,
+                connect_args={"sslmode": "require"},
+            )
+            if _uses_iam_auth():
+                _attach_iam_token_provider(self.engine, db_url)
             self._dialect = "postgresql"
         else:
             self.engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
