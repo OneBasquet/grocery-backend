@@ -23,6 +23,23 @@ from scrapers.iceland_playwright import IcelandPlaywrightScraper
 PEPESTO_RETAILERS_PATH = Path(__file__).resolve().parent.parent / "config" / "pepesto_retailers.json"
 
 
+def _query_words_all_match(query_words: List[str], candidate_text: str, min_word_ratio: int = 75) -> bool:
+    """True if every query word has a reasonably close match among the candidate's words.
+
+    Used instead of a bare token_set_ratio threshold, which lets a single strong
+    shared word (e.g. "large") clear the bar even when other, more important
+    query words (e.g. "eggs") never appear anywhere in the candidate — that's
+    how searching "eggs large" was matching "ASDA Extra Large Onions".
+    """
+    from thefuzz import fuzz
+
+    candidate_words = candidate_text.split()
+    return all(
+        any(fuzz.ratio(qw, cw) >= min_word_ratio for cw in candidate_words)
+        for qw in query_words
+    )
+
+
 class GroceryPriceOrchestrator:
     """Main orchestrator for the grocery price comparison system."""
     
@@ -342,9 +359,11 @@ class GroceryPriceOrchestrator:
                             scored.append((p, 200))
                             continue
 
-                        # Tier 2: fuzzy match on full query vs name
+                        # Tier 2: fuzzy match, but only if every query word has
+                        # some close match in the candidate — a shared word
+                        # like "large" alone isn't enough (see _query_words_all_match).
                         ratio = fuzz.token_set_ratio(query_lower, name_lower)
-                        if ratio >= 60:
+                        if ratio >= 60 and _query_words_all_match(words, text):
                             scored.append((p, ratio))
 
                     scored.sort(key=lambda x: x[1], reverse=True)
@@ -365,7 +384,7 @@ class GroceryPriceOrchestrator:
                 return (0, p['price'])
             text = p['name'].lower() + ' ' + (p.get('retailer') or '').lower()
             words = query_lower.split()
-            has_all = all(w in text for w in words)
+            has_all = all(w in text for w in words) or _query_words_all_match(words, text)
             ratio = _fuzz.token_set_ratio(query_lower, p['name'].lower())
             # Sort: exact word matches first, then by fuzzy score desc, then price asc
             return (0 if has_all else 1, -ratio, p['price'])

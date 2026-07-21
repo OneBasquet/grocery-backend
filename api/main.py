@@ -335,14 +335,16 @@ def basket_optimize_post(payload: dict):
     if missing:
         raise HTTPException(status_code=404, detail=f"Products not found: {missing}")
 
+    # Built from whichever retailers are actually present among the requested
+    # items, not a hardcoded list — a basket item from any retailer we track
+    # (not just tesco/sainsburys/asda) must still count towards its total.
+    retailers_in_basket = {(p.get("retailer") or "").lower() for p in all_products.values()}
     totals = {r: {"retailer": r, "total": 0.0, "items": [], "member_savings": 0.0, "total_quantity": 0}
-              for r in ("tesco", "sainsburys", "asda")}
+              for r in retailers_in_basket}
 
     for pid, qty in item_qty.items():
         p = all_products[pid]
         retailer = (p.get("retailer") or "").lower()
-        if retailer not in totals:
-            continue
         item = _decorate(p)
         item["quantity"] = qty
         shelf = float(p.get("price") or 0)
