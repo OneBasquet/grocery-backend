@@ -64,7 +64,10 @@ def run(terms: list[str], max_items: int = 20, skip_retailers: list[str] = None)
 
 
 if __name__ == "__main__":
-    all_retailers = ["tesco", "sainsburys", "asda"]
+    # Must match every retailer orchestrator.scrape_all_retailers() knows about —
+    # --only used to silently fail to skip morrisons/waitrose/ocado/iceland since
+    # they weren't in this list at all.
+    all_retailers = ["tesco", "sainsburys", "asda", "waitrose", "morrisons", "ocado", "iceland"]
 
     parser = argparse.ArgumentParser(description="Warm-cache worker for grocery DB")
     parser.add_argument("--limit", type=int, default=0, help="Only scrape the first N terms")
@@ -72,12 +75,15 @@ if __name__ == "__main__":
     parser.add_argument("--max-items", type=int, default=20, help="Max products per retailer per term")
     parser.add_argument("--skip", nargs="+", default=[], help="Retailers to skip (e.g. --skip tesco)")
     parser.add_argument("--only", nargs="+", default=[], help="Only scrape these retailers (e.g. --only sainsburys asda)")
+    parser.add_argument("--start", type=int, default=1, help="Start from this term number (1-based, e.g. --start 6 skips first 5)")
     args = parser.parse_args()
 
     if args.term:
         terms = [args.term]
     else:
         terms = load_seed_terms()
+        if args.start > 1:
+            terms = terms[args.start - 1:]
         if args.limit > 0:
             terms = terms[:args.limit]
 
