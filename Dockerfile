@@ -26,7 +26,7 @@ RUN apt-get update \
 COPY . .
 
 # Entrypoint starts Xvfb (DISPLAY=:99), then execs uvicorn.
-RUN chmod +x docker-entrypoint.sh
+RUN chmod +x docker-entrypoint.sh scrape-entrypoint.sh
 
 # FastAPI listens on :80 inside the container; CloudFront origins to the EC2 host on :80.
 EXPOSE 80
